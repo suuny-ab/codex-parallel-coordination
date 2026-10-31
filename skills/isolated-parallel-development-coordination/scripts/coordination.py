@@ -124,6 +124,9 @@ def receipt_context(state, p):
     t = state["tasks"][p["task_id"]]
     require(p["project_id"] == state["project"]["id"] and p["channel"] in ("native_agent", "app_thread") and
             p["owner_agent_id"] == t["owner_agent_id"], "native receipt identity mismatch")
+    if p.get('origin_mode') == 'observed_terminal':
+        from demand_routing import observed_receipt_origin
+        observed_receipt_origin(state, p)
     if p["channel"] == "app_thread" or state.get("delivery", {}).get("transport", {}).get("mode") == "mixed_verified":
         d = state.get("delivery")
         require(d and d.get("transport", {}).get("mode") in ("fixture", "app_thread_verified", "mixed_verified"), "App thread receipt route not declared")

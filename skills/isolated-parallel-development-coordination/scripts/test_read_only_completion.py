@@ -17,9 +17,14 @@ class ReadOnlyFixture(fixtures.CoreFixture):
     def delivered(self, mode='delivery_verified', kind='read_only', managed_input=False):
         work = self.runtime.directory/'resources/audited-input' if managed_input else self.root/'A'
         work.mkdir(parents=True);(work/'feature.py').write_text('original source\n',encoding='utf-8')
-        self.runtime.prepare(dict(task_id='A',owner_agent_id='worker-A',worktree=str(work),branch='audit/A',
+        # Historical task fixture predates demand intake. New prepare no longer
+        # creates read-only developers; its completion protocol remains intact.
+        spec=dict(task_id='A',owner_agent_id='worker-A',worktree=str(work),branch='audit/A',
             task_kind=kind,acceptance_type=mode,scope='Read existing source without changes',
-            acceptance=['Verified findings'],user_reference='explicit read-only scope and acceptance mode'),self.actor)
+            acceptance=['Verified findings'],user_reference='explicit historical scope and acceptance mode')
+        self.runtime.apply(dict(spec,op='register'),self.actor)
+        self.runtime.apply(dict(op='confirm',task_id='A',**{k:spec[k] for k in ('scope','acceptance','user_reference')}),self.actor)
+        self.runtime.apply(dict(op='queue',task_id='A',reason='Historical controlled worker',user_reference=spec['user_reference']),self.actor)
         self.bind()
         self.runtime.apply(dict(op='delegate',agent_id=self.reviewer,task_ids=['A'],merge_order=['A'],
             required_ci_jobs=[] if kind=='read_only' else ['code-only-job'],routes={'worker-A':dict(target_id='native-A',existing_work_agent=True,
@@ -32,7 +37,7 @@ class ReadOnlyFixture(fixtures.CoreFixture):
             creates_conversation=False,authors={'worker-A':pair})),self.reviewer)
         adapter=HostAdapter('native_agent',['send_input','wait_agent'],
             lambda tool,args: {'id':'native-A'} if tool=='send_input' else {'status':{'native-A':'running'}},self.reviewer)
-        self.runtime.launch('A',adapter,attempt_id='audit-run',admission=self.permit(attempt='audit-run',executor='worker-A'),
+        self.launch_fixture('A',adapter,attempt_id='audit-run',admission=self.permit(attempt='audit-run',executor='worker-A'),
             authorized=True,message='Read-only fixture',executor_id='worker-A')
         report=pack(dict(project_id=self.runtime.project_id,task_id='A',delivery_revision=1,summary='Read-only findings',
             task_kind=kind,acceptance_type=mode,
