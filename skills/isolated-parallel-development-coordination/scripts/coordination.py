@@ -15,7 +15,7 @@ from task_completion import definition, confirmed
 
 SCHEMA = "parallel-coordination/2"
 PHASES = ("discussion", "backlog", "developing", "awaiting_acceptance",
-          "awaiting_integration", "integrating", "awaiting_merge", "completed", "awaiting_delivery_review")
+          "awaiting_integration", "integrating", "awaiting_merge", "completed", "awaiting_delivery_review", "cancelled")
 RIGHTS = ("commit", "push", "mr", "merge", "deploy")
 
 
@@ -56,6 +56,8 @@ def validate(state):
                 "positive integer worker_capacity required")
     require(all(isinstance(state[k], dict) for k in ("tasks", "items", "receipts")), "damaged collections")
     require(isinstance(state["history"], list), "history missing")
+    from development_lifecycle import validate_bindings, cancellation_fields
+    validate_bindings(state)
     active = [k for k, i in state["items"].items() if i["status"] in ("active", "waiting_user")]
     require(active == ([] if state["active_human_item"] is None else
                        [state["active_human_item"]]), "inconsistent human focus")
@@ -75,6 +77,9 @@ def validate(state):
                     completion.get('acceptance_type')==mode and completion.get('delivery_revision')==task['delivery_revision'] and
                     completion.get('report')==task['delivery'] and completion.get('owner_agent_id')==task['owner_agent_id'],
                     'read-only completion binding missing or changed')
+        if task['phase'] == 'cancelled':
+            require(task.get('cancellation', {}).get('proof') and not task.get('merge'), 'cancellation proof required; not a completion')
+            require(task['cancellation'].get('binding') == cancellation_fields(task), 'cancelled task identity changed')
     for key, item in state["items"].items():
         require(key == item["id"] and item["status"] in
                 ("queued", "active", "waiting_user", "closed", "superseded"), "bad human item")
@@ -378,7 +383,7 @@ def _checkpoint(state):
     held = {i["id"]: reasons for i in state["items"].values() if i["status"] == "queued"
             and (reasons := readiness(state, i))}
     waiting = {k: {"phase": t["phase"], "blocker": t["blocker"]} for k, t in state["tasks"].items()
-               if t["phase"] != "completed"}
+               if t["phase"] not in ("completed", "cancelled")}
     receipts = {k: r.get("reason") for k, r in state["receipts"].items() if r["status"] == "held"}
     return dict(base, allow_end=candidate is None, action="present_next" if candidate else
                 "wait_internal" if waiting or held or receipts or base["unverified"] else "idle", next=presentation(state, candidate),
@@ -408,7 +413,8 @@ def summary(state):
             "next": check["next"]["id"] if check["next"] else None,
             "tasks": {k: dict({key: t[key] for key in ("phase", "implementation", "blocker", "delivery_revision",
                 "self_test", "quality_review", "user_acceptance", "integration", "mr", "merge")},
-                task_kind=definition(t)[0],acceptance_type=definition(t)[1],completion=t.get('completion'))
+                task_kind=definition(t)[0],acceptance_type=definition(t)[1],completion=t.get('completion'),
+                cancellation=t.get('cancellation'),cleanup=t.get('cleanup'))
                 for k, t in state["tasks"].items()},
             "worker_runs": {k: t.get("worker_run") for k, t in state["tasks"].items()},
             "blocker_followups": {k: t.get("blocker_followup") for k, t in state["tasks"].items()
@@ -481,7 +487,7 @@ def consume(state, payload):
         if task.get("worker_run"):
             task["worker_run"]["status"] = "reported"
         return "processed"
-    require(task["phase"] != "completed", "completed task needs a new requirement")
+    require(task["phase"] not in ("completed","cancelled"), "ended task needs a new requirement")
     reset_delivery(task)
     task["delivery_revision"] = revision
     task["report_path"] = payload["report"]["path"]
@@ -547,6 +553,7 @@ def transition(original, op):
     name, task_id = op["op"], op.get("task_id")
     receipt_result = "received"
     task = state["tasks"].get(task_id)
+    require(not task or task['phase'] != 'cancelled', 'cancelled task needs a new requirement')
     if name in OPS:
         delivery_apply(state, op)
     elif name in ("register", "dispatch"):

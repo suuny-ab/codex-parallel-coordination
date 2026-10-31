@@ -30,7 +30,10 @@ def cleanup_verified(facts):
         completed = facts.get('task_completion_verified') is True and (
             kind == 'code' and facts.get('task_completed_on_main') is True and facts.get('read_only_completion_verified') is False or
             kind == 'read_only' and facts.get('task_completed_on_main') is False and facts.get('read_only_completion_verified') is True)
-    require(completed, 'cleanup requires canonical current completion: code on main or verified read_only; pending_cleanup')
+    if facts.get('task_cancelled_verified') is True:
+        completed = (facts.get('task_completion_verified') is False and facts.get('task_completed_on_main') is False
+                     and facts.get('read_only_completion_verified') is False and facts.get('task_kind') == 'code')
+    require(completed, 'cleanup requires canonical completion or explicit cancellation; pending_cleanup')
 
 
 def _io_path(path):

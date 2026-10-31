@@ -94,6 +94,11 @@ def finish(runtime, proof_ref, actor):
 
 def completion_flags(state, key):
     task=state['tasks'][key];kind,_=definition(task)
+    if task['phase']=='cancelled':
+        from development_lifecycle import cancelled
+        cancelled(state,key)
+        return dict(task_kind=kind,task_completion_verified=False,task_completed_on_main=False,
+                    read_only_completion_verified=False,task_cancelled_verified=True)
     require(task['phase']=='completed','task not completed')
     if kind=='read_only':verified(state,key)
     else:require(task.get('merge',{}).get('verified') is True,'main not verified')
