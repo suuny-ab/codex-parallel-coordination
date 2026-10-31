@@ -8,7 +8,6 @@ def definition(task):
     kind=task.get('task_kind','code')
     mode=task.get('acceptance_type','user_required')
     require(kind in ('code','read_only') and mode in ('delivery_verified','user_required'),'unknown task kind/acceptance type')
-    require(kind!='code' or mode=='user_required','code retains its original acceptance gate')
     requirements=task.get('requirements')
     if requirements:
         require(requirements.get('task_kind','code')==kind and requirements.get('acceptance_type','user_required')==mode,

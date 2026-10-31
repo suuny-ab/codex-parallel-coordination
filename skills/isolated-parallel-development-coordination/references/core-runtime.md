@@ -60,6 +60,8 @@ RESOURCE.capacity_release(request_id, permit_id, receipt_ref, verifier) 的 veri
 
 ## 完成与清理
 
+原批准的集成者可以通过 `real-use` 入口承接同任务/精确源码的独审、真实 CLI 作者及已发生的合并事实。技术自动验收保持 user_acceptance 原值；明确需要人工验收的任务保留原关口。输入契约和历史默认编码的受控处理见[真实任务事实承接](real-use-closeout.md)。此入口不执行外部副作用，不替代下面的清理门禁。
+
 record_main_inclusion(proof_ref, delivery_actor) 不执行 merge，只核对已经实际发生的合入：既有用户接受、集成、自测/独审/当前 CI/顺序及 Git 权限仍有效；proof 绑定 project/task/current revision、provider、source_head、previous_main、main_ref、main_head、contains_source 和实际证据。GitHub/GitLab 元数据都可登记。host_verified 来自实际宿主观察，fixture_only 仅隔离演练，不能授权真实回收。
 
 生命周期 guard 需要合法 task.phase=completed：code 仍核 merge.verified 和目标 main 包含源码；read_only 核当前 canonical completion、交付委托、报告修订和只读输入，保全清单绑定 completion_verification。两者均核交付/未入库材料外部保全和知识交接、源/备份 hash 及 scope。executor generation、无运行/后代/未完动作、无共享保护/其它任务引用均检查。close 真正成功才记 lease=closed；仅 completed 或不明确成功记 unknown，继续占位。重复 operation_id 不重复调用。失效保全或旧 generation 拒绝。已完成任务不 resume；bug 由最新 main 新任务关联旧记录。外部未完成任务失联恢复仍需另行合法导入边界，本次没有新增该入口。

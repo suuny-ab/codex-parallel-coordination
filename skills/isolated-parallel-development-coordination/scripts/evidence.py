@@ -135,7 +135,11 @@ def report_for(state, task_id, ready=True):
     require(test["command"].strip(), "self-test command required")
     if ready:
         require(test["status"] == "passed", "technical self-test not passed")
-        require(report.get("quality_review", {}).get("status") == "passed", "business/quality review pending")
+        if task.get('independent_quality'):
+            from real_use_closeout import quality
+            quality(state, task_id)
+        else:
+            require(report.get("quality_review", {}).get("status") == "passed", "business/quality review pending")
     entry = report["entry"]
     if entry["kind"] == "file":
         require(artifact(entry["artifact"]).stat().st_size > 0, "empty acceptance entry")
