@@ -394,6 +394,9 @@ class MainInclusionTests(DeliveryFixture):
         with patch('merge_gate.git',side_effect=AssertionError('No Git operation allowed')):
             result=self.runtime.record_main_inclusion(proof,'delivery-worker')
         self.assertEqual(result['status'],'completed');self.assertFalse(result['cleanup_authorized'])
+        self.assertTrue(result['cleanup_required']);self.assertEqual(result['next_action'],'preserve_and_reclaim')
+        self.assertEqual(self.runtime._load()['tasks']['A']['cleanup'],
+                         dict(status='pending_cleanup',owner='delivery-worker',next_action='preserve_and_reclaim'))
         self.assertEqual(self.runtime._load()['tasks']['A']['merge']['main_sha'],'d'*40)
 
     def test_wrong_target_or_missing_merge_right_cannot_finish_task(self):

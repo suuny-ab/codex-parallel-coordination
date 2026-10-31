@@ -384,12 +384,59 @@ class Runtime:
             for item in proof['evidence']:artifact(item)
             task.update(phase='completed',merge=dict(verified=True,head_sha=proof['source_head'],target_sha=proof['previous_main'],
                 main_sha=proof['main_head'],scope=proof['scope'],proof=proof_ref))
+            task['cleanup']=dict(status='pending_cleanup',owner=actor_id,next_action='preserve_and_reclaim')
             self._save(state,dict(op='record-main-inclusion',task_id=key,proof=proof_ref))
-            return dict(revision=state['revision'],task_id=key,status='completed',cleanup_authorized=False)
+            return dict(revision=state['revision'],task_id=key,status='completed',cleanup_authorized=False,
+                        cleanup_required=True,next_action='preserve_and_reclaim')
 
     def complete_read_only(self,proof_ref,actor_id):
         from task_completion import finish
         return finish(self,proof_ref,actor_id)
+
+    def bind_development(self,task_id,spec_ref,actor_id,**options):
+        from development_lifecycle import bind
+        return bind(self,task_id,spec_ref,actor_id,**options)
+
+    def cancel_task(self,proof_ref,actor_id):
+        from development_lifecycle import cancel
+        return cancel(self,proof_ref,actor_id)
+
+    def close_cancelled_pr(self,task_id,operation_id,preservation_ref,invoke,actor_id,**options):
+        from development_lifecycle import close_pr
+        return close_pr(self,task_id,operation_id,preservation_ref,invoke,actor_id,**options)
+
+    def reconcile_cancelled_pr(self,task_id,observation_ref,actor_id):
+        from development_lifecycle import reconcile_pr
+        return reconcile_pr(self,task_id,observation_ref,actor_id)
+
+    def reclaim_development(self,task_id,operation_id,preservation_ref,adapter,invoke,*,
+                            close_pr=None,authorized=False):
+        """Finite post-end continuation; host supplies preservation and current authority."""
+        require(authorized is True and operation_id,'current exact reclamation authorization required')
+        state=self._load();self._actor(state,adapter.actor_id);self._scope(state,task_id)
+        task=state['tasks'][task_id]
+        if task['phase']=='cancelled':
+            pr=self.close_cancelled_pr(task_id,operation_id+':pr',preservation_ref,
+                close_pr or (lambda _:dict(status='failed',reason='PR close capability unavailable')),
+                adapter.actor_id,authorized=True,scope=adapter.scope)
+            if pr.get('status',pr.get('pr_status')) not in ('closed','not_required'):
+                return dict(status='pending_cleanup',owner=adapter.actor_id,next_action='reconcile_or_close_pr')
+        from cleanup import eligibility
+        eligibility(self,self._load(),task_id,preservation_ref,adapter.scope)
+        executor=self._load()['runtime']['executors'][task['owner_agent_id']]
+        if executor['lease']!='closed':
+            closed=self.lifecycle('close',task['owner_agent_id'],task_id,operation_id+':agent',executor['generation'],
+                                  adapter,preservation_ref=preservation_ref,authorized=True)
+            if closed['status']!='closed':
+                return dict(status='pending_cleanup',owner=adapter.actor_id,next_action='reconcile_or_close_agent',outcome=closed)
+        else:
+            closed=next(o for o in self._load()['runtime']['operations'].values() if o.get('operation')=='close' and
+                o.get('task_id')==task_id and o.get('executor_id')==task['owner_agent_id'] and
+                o.get('generation')==executor['generation'] and o.get('status')=='closed')
+        receipt=self.release_receipt(closed['operation_id'],adapter.actor_id)
+        result=self.cleanup_task(task_id,operation_id+':files',preservation_ref,invoke,adapter.actor_id,
+                                 authorized=True,scope=adapter.scope)
+        return dict(result,release_receipt=receipt)
 
     def register_resource(self,task_id,resource,authority_ref,actor_id):
         from cleanup import register
@@ -415,50 +462,10 @@ class Runtime:
             self._scope(state,task_id)
             executor=state['runtime']['executors'][executor_id]
             task=state['tasks'][task_id]
-            from task_completion import definition, verified
-            if definition(task)[0]=='read_only':verified(state,task_id)
-            else:
-                require(task['phase']=='completed' and task.get('merge',{}).get('verified') is True,
-                        'task must be merged into target main and verified before reclamation')
+            from cleanup import eligibility
+            eligibility(self,state,task_id,preservation_ref,scope)
             require(task['owner_agent_id']==executor_id and executor['generation']==generation,'stale lifecycle target')
             require(executor['lease']=='open','lease needs reconciliation or is already closed')
-            require(executor['execution'] in ('completed','idle') and executor['active_children']==[] and
-                    executor['pending_work'] is False,'running/unknown executor or unfinished actions/children')
-            artifact(executor['observation'])
-            for other in state['tasks'].values():
-                require(other['owner_agent_id']!=executor_id or other.get('worker_run',{}).get('status')!='running',
-                        'executor still has an undelivered running assignment')
-            delivered=task.get('delivery') or task.get('pause_checkpoint')
-            require(delivered,'delivery/checkpoint must be preserved before close')
-            artifact(delivered)
-            preservation=load_bound(preservation_ref)
-            require(preservation.get('executor_id')==executor_id and preservation.get('generation')==generation and
-                    preservation.get('files'),'external preservation inventory required')
-            if definition(task)[0]=='read_only':
-                from task_completion import preservation_completion
-                preservation_completion(state,task_id,preservation,scope)
-            else:
-                merged=load_bound(preservation['merge_verification'])
-                require(merged.get('project_id')==self.project_id and merged.get('task_id')==task_id and
-                        merged.get('source_head')==task['merge'].get('head_sha') and merged.get('main_head') and
-                        merged.get('main_ref')==state['project']['main_branch'] and
-                        merged.get('contains_source') is True and merged.get('scope')==scope and merged.get('evidence'),
-                        'fresh target-main inclusion proof required; fixture cannot authorize a real host close')
-                for evidence in merged['evidence']: artifact(evidence)
-            artifact(preservation['handoff'])
-            require(preservation.get('unregistered_evidence_preserved') is True,'unregistered evidence handoff not verified')
-            for item in preservation['files']:
-                path=artifact(item)
-                require(not path.resolve().is_relative_to(self.project_root),'preservation must be outside project worktree')
-                if item.get('original'): artifact(item['original'])
-            require(any(item.get('original')==delivered and item['sha256']==delivered['sha256']
-                        for item in preservation['files']),'current delivery/checkpoint not externally preserved')
-            active=state['items'].get(state['active_human_item'],{})
-            require(active.get('task_id')!=task_id,'active human item protects this executor')
-            require(not task.get('acceptance_environment_requires_agent'),'acceptance environment requires live executor')
-            require(not task.get('publication_dependencies') and not executor.get('shared') and
-                    not executor.get('protected') and all(t['phase']=='completed' for t in state['tasks'].values()
-                    if t['owner_agent_id']==executor_id),'publication, shared/protected or other unfinished task dependency')
             ticket=dict(project_id=self.project_id,task_id=task_id,attempt_id=attempt_id,executor_id=executor_id,
                 generation=generation,revision=state['revision'],delivery_preserved=True,delivered=True,
                 no_running_children=True,no_pending_work=True,protected=False,evidence=[preservation_ref,executor['observation']],outcome=None)
@@ -473,7 +480,8 @@ class Runtime:
             self._scope(state,task_id)
             existing=state['runtime']['operations'].get(attempt_id)
             if existing:
-                require(existing.get('executor_id')==executor_id and existing.get('operation')==operation,'operation ID reused')
+                require(existing.get('executor_id')==executor_id and existing.get('operation')==operation and
+                        existing.get('task_id')==task_id and existing.get('generation')==generation,'operation ID reused')
                 actual=state['runtime']['executors'][executor_id]['generation']
                 require(actual==generation+(1 if existing['status']=='resumed' else 0),'stale lifecycle generation')
                 return deepcopy(existing)
@@ -485,7 +493,7 @@ class Runtime:
             state=self._load();executor=state['runtime']['executors'][executor_id]
             record=dict(operation=operation,operation_id=attempt_id,executor_id=executor_id,task_id=task_id,attempt_id=attempt_id,
                 generation=generation,status='intent',project_id=self.project_id,preservation=preservation_ref,proof_scope=adapter.scope,
-                cleanup_authorized=authorized)
+                cleanup_authorized=authorized,executor_routes=deepcopy(executor['routes']),executor_authority=executor['authority'])
             if admission:
                 permit=load_bound(admission);record.update(request_id=permit['request_id'],permit_id=permit['permit_id'],launch_identity=permit.get('launch_identity'))
             elif task_id in state['tasks']:
@@ -495,11 +503,17 @@ class Runtime:
             state['runtime']['operations'][attempt_id]=record
             executor['lease']='closing' if operation=='close' else 'resuming'
             self._save(state,dict(op=operation+'-intent',executor_id=executor_id))
-            try: result=adapter.call(operation,target=executor['routes'][adapter.channel]['target_id'],authorized=True)
+            try:
+                result=(adapter.call(operation,target=executor['routes'][adapter.channel]['target_id'],authorized=True)
+                        if adapter.capabilities()[operation] else dict(status='unsupported'))
             except Exception as error: result=dict(status='unknown',error_type=type(error).__name__)
             record.update(result)
-            if result['status']=='closed': executor.update(lease='closed',execution='unknown')
+            if result['status']=='closed':
+                executor.update(lease='closed',execution='unknown')
+                if state['tasks'][task_id]['phase']=='cancelled' and state['tasks'][task_id].get('worker_run'):
+                    state['tasks'][task_id]['worker_run']['status']='cancelled'
             elif result['status']=='resumed': executor.update(lease='open',generation=generation+1,execution='unknown',observation=None)
+            elif result['status']=='unsupported': executor['lease']='open' if operation=='close' else 'closed'
             else: executor['lease']='unknown'
             self._save(state,dict(op=operation+'-outcome',executor_id=executor_id))
             return deepcopy(record)
@@ -516,6 +530,8 @@ class Runtime:
             if closed:
                 executor=state['runtime']['executors'][operation['executor_id']]
                 require(executor['lease']=='closed' and executor['generation']==operation['generation'],'close receipt is stale after resume')
+                require(operation.get('executor_routes')==executor['routes'] and operation.get('executor_authority')==executor['authority'],
+                        'close receipt executor identity changed')
             require(operation.get('request_id') and operation.get('permit_id'),'exact resource permit must be retained')
             value={k:operation[k] for k in ('task_id','attempt_id','request_id','permit_id')}
             value.update(project_id=self.project_id,operation_id=operation_id,
@@ -542,21 +558,12 @@ class Runtime:
                 executor=state['runtime']['executors'][operation['executor_id']]
                 task=state['tasks'][operation['task_id']]
                 require(executor['lease']=='closed' and executor['generation']==operation['generation'] and operation['status']=='closed','not a current confirmed close')
-                preservation=load_bound(operation['preservation'])
-                for item in preservation['files']:
-                    artifact(item)
-                    if item.get('original'):artifact(item['original'])
-                artifact(preservation['handoff'])
-                from task_completion import definition, completion_flags, preservation_completion
-                if definition(task)[0]=='read_only':preservation_completion(state,operation['task_id'],preservation,operation['proof_scope'])
-                else:
-                    merged=load_bound(preservation['merge_verification'])
-                    for item in merged['evidence']:artifact(item)
-                    require(task['phase']=='completed' and task['merge']['verified'] and merged['source_head']==task['merge']['head_sha']
-                        and merged['main_ref']==state['project']['main_branch'] and merged['contains_source'] is True,'main proof changed')
-                require(not task.get('publication_dependencies') and not executor.get('shared') and not executor.get('protected')
-                    and all(t['phase']=='completed' and t.get('worker_run',{}).get('status')!='running' for t in state['tasks'].values()
-                    if t['owner_agent_id']==operation['executor_id']),'new dependency prevents resource release')
+                require(operation.get('executor_routes')==executor['routes'] and
+                        operation.get('executor_authority')==executor['authority'],'executor identity changed')
+                artifact(executor['authority'])
+                from cleanup import eligibility
+                from task_completion import completion_flags
+                eligibility(self,state,operation['task_id'],operation['preservation'],operation['proof_scope'])
                 return dict(completion_flags(state,operation['task_id']),verified=True,preservation_valid=True,no_active_work=True,
                     no_active_descendants=True,no_release_dependencies=True,exclusive_task_resource=True,
                     cleanup_authorized=operation.get('cleanup_authorized') is True,protected=False)
@@ -578,6 +585,8 @@ class Runtime:
             for item in facts['evidence']:artifact(item)
             record.setdefault('observations',[]).append(observation_ref);record['status']='closed'
             executor.update(lease='closed',execution='unknown')
+            task=state['tasks'][record['task_id']]
+            if task['phase']=='cancelled' and task.get('worker_run'):task['worker_run']['status']='cancelled'
             self._save(state,dict(op='reconcile-close',operation_id=operation_id));return deepcopy(record)
 
     @contextmanager
@@ -585,7 +594,7 @@ class Runtime:
         with writer_lock(self.path):
             state=self._load();self._actor(state,actor_id)
             executor=state['runtime']['executors'][executor_id]
-            require(state['tasks'][task_id]['phase']!='completed',
+            require(state['tasks'][task_id]['phase'] not in ('completed','cancelled'),
                     'completed tasks are not resumed; create a new task from current main and link its predecessor')
             require(state['tasks'][task_id]['owner_agent_id']==executor_id and executor['generation']==generation and
                     executor['lease']=='closed','only explicitly closed current executor can resume')

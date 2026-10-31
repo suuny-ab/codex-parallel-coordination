@@ -9,6 +9,13 @@ from task_completion import definition, verified, preservation_completion, compl
 KINDS={'agent','process','worktree','database','environment','artifact'}
 
 
+def canonical_path(path):
+    value=str(Path(path).resolve())
+    if value.startswith('\\\\?\\UNC\\'):value='\\\\'+value[8:]
+    elif value.startswith('\\\\?\\'):value=value[4:]
+    return Path(value)
+
+
 def register(runtime, task_id, resource, authority_ref, actor_id):
     artifact(authority_ref)
     with writer_lock(runtime.path):
@@ -16,8 +23,8 @@ def register(runtime, task_id, resource, authority_ref, actor_id):
         require(resource.get('id') and resource.get('kind') in KINDS,'explicit resource identity/kind required')
         resources=state['runtime'].setdefault('resources',{})
         require(resource['id'] not in resources,'resource already registered')
-        root=Path(state['runtime']['cleanup_root']).resolve()
-        path=Path(resource['path']).resolve() if resource.get('path') else None
+        root=canonical_path(state['runtime']['cleanup_root'])
+        path=canonical_path(resource['path']) if resource.get('path') else None
         if resource['kind'] in ('worktree','database','environment','artifact'):
             require(path and path!=root and path.is_relative_to(root),'resource path outside managed cleanup root')
         else:
@@ -30,6 +37,9 @@ def register(runtime, task_id, resource, authority_ref, actor_id):
         value=dict(deepcopy(resource),task_id=task_id,project_id=runtime.project_id,authority=authority_ref,
             references=list(resource.get('references',[task_id])),cleanup_status='retained')
         if path is not None:value['path']=str(path)
+        if path is not None and resource['kind'] in ('worktree','database','environment','artifact') and io_path(path).exists():
+            info=io_path(path).stat()
+            value['path_identity']=[info.st_dev,info.st_ino]
         value.setdefault('attempt_id',state['tasks'][task_id].get('worker_run',{}).get('attempt_id','resource-'+resource['id']))
         require(task_id in value['references'] and all(k in state['tasks'] for k in value['references']), 'resource references must be registered tasks')
         resources[resource['id']]=value
@@ -37,44 +47,90 @@ def register(runtime, task_id, resource, authority_ref, actor_id):
         return deepcopy(value)
 
 
-def eligibility(runtime,state,task_id,preservation_ref,scope):
+def eligibility(runtime,state,task_id,preservation_ref,scope,*,require_pr_closed=True):
     task=state['tasks'][task_id]
-    if definition(task)[0]=='read_only':verified(state,task_id)
-    else:require(task['phase']=='completed' and task.get('merge',{}).get('verified'),'task not completed on target main')
+    cancelled=task['phase']=='cancelled'
+    if cancelled:
+        from development_lifecycle import cancelled as verify_cancelled
+        record=verify_cancelled(state,task_id,scope)
+        if require_pr_closed:
+            require(record['pr_status'] in ('closed','not_required'),'cancelled PR must be confirmed closed before resource cleanup')
+            if record['pr_status']=='closed':artifact(record['pr_result']['evidence'])
+    elif definition(task)[0]=='read_only':verified(state,task_id)
+    else:require(task['phase']=='completed' and task.get('merge',{}).get('verified'),'task must be merged into target main and verified before reclamation')
     require(not task.get('publication_dependencies'),'release dependency still uses development resources')
     inventory=load_bound(preservation_ref)
-    if definition(task)[0]=='read_only':preservation_completion(state,task_id,inventory,scope)
+    executor=state['runtime']['executors'].get(task['owner_agent_id'])
+    require(executor and inventory.get('executor_id')==executor['id'] and inventory.get('generation')==executor['generation'],
+            'preservation executor/generation changed')
+    artifact(executor['authority'])
+    if cancelled:
+        require(inventory.get('cancellation_verification')==task['cancellation']['proof'],'preservation not bound to cancellation')
+    elif definition(task)[0]=='read_only':preservation_completion(state,task_id,inventory,scope)
     else:
         proof=load_bound(inventory['merge_verification'])
         require(proof.get('project_id')==runtime.project_id and proof.get('task_id')==task_id and
             proof.get('source_head')==task['merge'].get('head_sha') and proof.get('main_head') and
             proof.get('main_ref')==state['project']['main_branch'] and proof.get('contains_source') is True and
-            proof.get('scope')==scope and proof.get('evidence'),'target main proof mismatch')
+            proof.get('scope')==scope and task['merge'].get('scope',scope)==scope and proof.get('evidence'),'target main proof mismatch')
         for item in proof['evidence']:artifact(item)
     require(inventory.get('files') and inventory.get('unregistered_evidence_preserved') is True,'external evidence preservation required')
+    def external(item):
+        path=canonical_path(artifact(item))
+        require(not path.is_relative_to(canonical_path(runtime.project_root)) and not path.is_relative_to(canonical_path(task['worktree'])) and
+                not path.is_relative_to(canonical_path(state['runtime']['cleanup_root'])),'preservation must outlive all managed resources')
+        for resource in state['runtime'].get('resources',{}).values():
+            require(not resource.get('path') or not path.is_relative_to(canonical_path(resource['path'])),'preservation inside cleanup resource')
+    external(preservation_ref)
+    external(executor['authority'])
+    external(executor['observation'])
+    if cancelled:
+        external(task['cancellation']['proof'])
+        for item in load_bound(task['cancellation']['proof'])['evidence']:external(item)
+    elif definition(task)[0]=='code':
+        external(inventory['merge_verification'])
+        for item in proof['evidence']:external(item)
     for item in inventory['files']:
-        require(not artifact(item).resolve().is_relative_to(runtime.project_root),'preservation must outlive project resources')
+        external(item)
         if item.get('original'):
             original=Path(item['original']['path'])
-            if original.exists():artifact(item['original'])
+            if io_path(original).exists():artifact(item['original'])
             else:
                 cleaned=[r for r in state['runtime'].get('resources',{}).values() if r.get('path') and
-                    original.resolve().is_relative_to(Path(r['path']).resolve()) and r['cleanup_status']=='cleaned']
+                    canonical_path(original).is_relative_to(canonical_path(r['path'])) and r['cleanup_status']=='cleaned']
                 require(cleaned,'original evidence disappeared outside confirmed cleanup')
                 for resource in cleaned:artifact(resource['cleanup_result']['evidence'])
             require(item['sha256']==item['original']['sha256'],'external copy bytes differ')
-    artifact(inventory['handoff'])
-    current=task.get('delivery')
-    require(current and any(row.get('original')==current and row['sha256']==current['sha256'] for row in inventory['files']),
-            'current task delivery not externally preserved')
+    external(inventory['handoff'])
+    sources=[task.get('delivery') or task.get('pause_checkpoint')]
+    if task.get('development_binding'):sources.append(task['development_binding']['spec'])
+    if cancelled:sources+=load_bound(task['cancellation']['proof'])['artifacts']
+    else:require(sources[0],'current task delivery not externally preserved')
+    for source in filter(None,sources):
+        require(any(row.get('original')==source and row['sha256']==source['sha256'] for row in inventory['files']),
+                'current task delivery/work not externally preserved')
     for t in state['tasks'].values():
         if t['owner_agent_id']==task['owner_agent_id']:
-            require(t['phase']=='completed' and t.get('worker_run',{}).get('status')!='running','executor still serves active work')
+            require(t['phase'] in ('completed','cancelled') and (t['phase']=='cancelled' or t.get('worker_run',{}).get('status')!='running'),
+                    'executor still serves active work')
     executor=state['runtime']['executors'].get(task['owner_agent_id'])
     require(executor and (executor['execution'] in ('idle','completed') or executor['lease']=='closed') and executor.get('active_children')==[] and
             executor.get('pending_work') is False,'active or unverified executor/descendants')
     require(not executor.get('shared') and not executor.get('protected'),'shared/protected executor remains in use')
     require(executor['lease'] in ('open','closed'),'uncertain close/resume must be reconciled before new cleanup')
+    if executor['lease']=='closed':
+        require(any(operation.get('operation')=='close' and operation.get('status')=='closed' and
+            operation.get('task_id')==task_id and operation.get('executor_id')==executor['id'] and
+            operation.get('generation')==executor['generation'] and operation.get('executor_routes')==executor['routes'] and
+            operation.get('executor_authority')==executor['authority'] for operation in state['runtime']['operations'].values()),
+            'closed executor identity has no current canonical confirmation')
+    observation=load_bound(executor['observation'])
+    require(observation.get('executor_id')==executor['id'] and observation.get('generation')==executor['generation'] and
+            observation.get('execution') in ('idle','completed') and observation.get('active_children')==[] and
+            observation.get('pending_work') is False,'stale or active executor observation')
+    require(task['owner_agent_id'] not in (state['coordinator_id'],state.get('delivery',{}).get('agent_id')),
+            'main/delivery executor is protected')
+    require(not task.get('acceptance_environment_requires_agent'),'acceptance environment requires live executor')
     require(state['items'].get(state['active_human_item'],{}).get('task_id')!=task_id,'active user item protects task')
 
 
@@ -93,7 +149,7 @@ def run(runtime,task_id,operation_id,preservation_ref,invoke,actor_id,*,authoriz
         record=dict(operation='cleanup',task_id=task_id,operation_id=operation_id,status='intent',results={},preservation=preservation_ref,
                     cleanup_authorized=authorized,scope=scope)
         operations[operation_id]=record
-        task['cleanup']=dict(status='pending_cleanup',operation_id=operation_id)
+        task['cleanup']=dict(status='pending_cleanup',operation_id=operation_id,owner=actor_id)
         runtime._save(state,dict(op='cleanup-intent',task_id=task_id))
         for resource in resources:
             rid=resource['id']
@@ -103,21 +159,36 @@ def run(runtime,task_id,operation_id,preservation_ref,invoke,actor_id,*,authoriz
                 record['results'][rid]=dict(status='unknown',reason='inspect previous uncertain effect; do not retry');continue
             try:
                 require(not resource.get('protected'),'protected resource')
-                require(all(state['tasks'][k]['phase']=='completed' for k in resource['references']),'other task still references resource')
+                require(all(state['tasks'][k]['phase'] in ('completed','cancelled') for k in resource['references']),'other task still references resource')
                 if resource.get('shared'):
                     unused=load_bound(resource['unused_proof'])
                     require(unused.get('resource_id')==rid and unused.get('active_references')==[],'shared references not verified unused')
                 if resource.get('path'):
-                    root=Path(state['runtime']['cleanup_root']).resolve();path=Path(resource['path']).resolve()
+                    root=canonical_path(state['runtime']['cleanup_root']);path=canonical_path(resource['path'])
                     require(path!=root and path.is_relative_to(root),'resolved cleanup path escaped managed root')
+                    if resource.get('path_identity'):
+                        info=io_path(path).stat()
+                        require([info.st_dev,info.st_ino]==resource['path_identity'],'resource path now identifies another object')
+                    for other in state['runtime'].get('resources',{}).values():
+                        if other['id']==rid or not other.get('path') or other['cleanup_status']=='cleaned':continue
+                        other_path=canonical_path(other['path'])
+                        require(not path.is_relative_to(other_path) and not other_path.is_relative_to(path),
+                                'overlapping registered resource must be resolved before cleanup')
+                    for key,other in state['tasks'].items():
+                        if key==task_id:continue
+                        other_path=canonical_path(other['worktree'])
+                        require(not path.is_relative_to(other_path) and not other_path.is_relative_to(path),'another task worktree is protected')
                 if resource['kind']=='agent':
                     executor=state['runtime']['executors'][resource['executor_id']]
                     confirmed=[o for o in operations.values() if o.get('operation')=='close' and
                         o.get('executor_id')==resource['executor_id'] and o.get('generation')==resource['generation'] and
-                        o.get('status')=='closed' and o.get('release_receipt')]
-                    require(executor['lease']=='closed' and confirmed,'close via canonical lifecycle entry before resource aggregation')
+                        o.get('task_id')==task_id and o.get('status')=='closed' and o.get('release_receipt')]
+                    require(executor['generation']==resource['generation'] and executor['lease']=='closed' and confirmed,
+                            'close via canonical current lifecycle entry before resource aggregation')
                     result=dict(status='cleaned',already_confirmed=True,evidence=confirmed[-1]['release_receipt'])
                     artifact(result['evidence'])
+                    require(runtime.verify_release_receipt(load_bound(result['evidence']),result['evidence'])['verified'],
+                            'canonical release is stale')
                     resource.update(cleanup_status='cleaned',cleanup_result=deepcopy(result))
                     record['results'][rid]=result
                     runtime._save(state,dict(op='aggregate-confirmed-agent-close',resource_id=rid))
@@ -138,6 +209,8 @@ def run(runtime,task_id,operation_id,preservation_ref,invoke,actor_id,*,authoriz
                 require(isinstance(result,dict) and result.get('status') in ('cleaned','failed','unknown'),'explicit cleanup result required')
                 if result['status']=='cleaned':
                     artifact(result['evidence'])
+                    if resource.get('path') and resource['kind'] in ('worktree','database','environment','artifact'):
+                        require(not io_path(resource['path']).exists(),'cleanup reported success but resource still exists')
                     if resource['kind']=='agent':
                         require(result.get('closed') is True,'agent report completion is not confirmed close')
                         executor=state['runtime']['executors'][resource['executor_id']]
@@ -166,9 +239,9 @@ def verify(runtime,context,proof):
             operation['cleanup_authorized'] is True and load_bound(resource['cleanup_proof'])==value,'not a current canonical cleanup intent')
         require(context.get('resource_id',context.get('request_id'))==resource['id'] and
             all(context.get(k)==value.get(k) for k in ('project_id','task_id','attempt_id')),'resource context differs')
-        if resource.get('path'):require(Path(context['path']).resolve()==Path(resource['path']).resolve(),'resource path differs')
+        if resource.get('path'):require(canonical_path(context['path'])==canonical_path(resource['path']),'resource path differs')
         eligibility(runtime,state,value['task_id'],operation['preservation'],operation['scope'])
-        require(not resource.get('protected') and all(state['tasks'][k]['phase']=='completed' for k in resource['references']),
+        require(not resource.get('protected') and all(state['tasks'][k]['phase'] in ('completed','cancelled') for k in resource['references']),
                 'resource protected or referenced')
         if resource.get('shared'):
             unused=load_bound(resource['unused_proof'])
@@ -188,6 +261,8 @@ def reconcile(runtime,task_id,resource_id,observation_ref,actor_id):
         require(facts.get('resource_id')==resource_id and facts.get('status') in ('cleaned','retained') and
                 facts.get('evidence'),'actual effect observation required')
         for item in facts['evidence']:artifact(item)
+        if facts['status']=='cleaned' and resource.get('path') and resource['kind'] in ('worktree','database','environment','artifact'):
+            require(not io_path(resource['path']).exists(),'resource path remains or was replaced; reconcile current identity')
         if resource['kind']=='agent' and facts['status']=='cleaned':require(facts.get('closed') is True,'idle is not closed')
         if resource['kind']=='agent' and facts['status']=='cleaned':
             executor=state['runtime']['executors'][resource['executor_id']]
