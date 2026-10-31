@@ -284,6 +284,8 @@ class Runtime:
             state=self._load();self._actor(state,actor_id)
             key=proof['task_id'];self._scope(state,key)
             task=state['tasks'][key]
+            from task_completion import definition
+            require(definition(task)[0]=='code','read-only tasks use the independent completion entry')
             from delivery import merge_authority
             merge_authority(state,key,actor_id,for_merge=True)
             from evidence import report_for
@@ -309,6 +311,10 @@ class Runtime:
             self._save(state,dict(op='record-main-inclusion',task_id=key,proof=proof_ref))
             return dict(revision=state['revision'],task_id=key,status='completed',cleanup_authorized=False)
 
+    def complete_read_only(self,proof_ref,actor_id):
+        from task_completion import finish
+        return finish(self,proof_ref,actor_id)
+
     def register_resource(self,task_id,resource,authority_ref,actor_id):
         from cleanup import register
         return register(self,task_id,resource,authority_ref,actor_id)
@@ -333,8 +339,11 @@ class Runtime:
             self._scope(state,task_id)
             executor=state['runtime']['executors'][executor_id]
             task=state['tasks'][task_id]
-            require(task['phase']=='completed' and task.get('merge',{}).get('verified') is True,
-                    'task must be merged into target main and verified before reclamation')
+            from task_completion import definition, verified
+            if definition(task)[0]=='read_only':verified(state,task_id)
+            else:
+                require(task['phase']=='completed' and task.get('merge',{}).get('verified') is True,
+                        'task must be merged into target main and verified before reclamation')
             require(task['owner_agent_id']==executor_id and executor['generation']==generation,'stale lifecycle target')
             require(executor['lease']=='open','lease needs reconciliation or is already closed')
             require(executor['execution'] in ('completed','idle') and executor['active_children']==[] and
@@ -349,13 +358,17 @@ class Runtime:
             preservation=load_bound(preservation_ref)
             require(preservation.get('executor_id')==executor_id and preservation.get('generation')==generation and
                     preservation.get('files'),'external preservation inventory required')
-            merged=load_bound(preservation['merge_verification'])
-            require(merged.get('project_id')==self.project_id and merged.get('task_id')==task_id and
-                    merged.get('source_head')==task['merge'].get('head_sha') and merged.get('main_head') and
-                    merged.get('main_ref')==state['project']['main_branch'] and
-                    merged.get('contains_source') is True and merged.get('scope')==scope and merged.get('evidence'),
-                    'fresh target-main inclusion proof required; fixture cannot authorize a real host close')
-            for evidence in merged['evidence']: artifact(evidence)
+            if definition(task)[0]=='read_only':
+                from task_completion import preservation_completion
+                preservation_completion(state,task_id,preservation,scope)
+            else:
+                merged=load_bound(preservation['merge_verification'])
+                require(merged.get('project_id')==self.project_id and merged.get('task_id')==task_id and
+                        merged.get('source_head')==task['merge'].get('head_sha') and merged.get('main_head') and
+                        merged.get('main_ref')==state['project']['main_branch'] and
+                        merged.get('contains_source') is True and merged.get('scope')==scope and merged.get('evidence'),
+                        'fresh target-main inclusion proof required; fixture cannot authorize a real host close')
+                for evidence in merged['evidence']: artifact(evidence)
             artifact(preservation['handoff'])
             require(preservation.get('unregistered_evidence_preserved') is True,'unregistered evidence handoff not verified')
             for item in preservation['files']:
@@ -458,14 +471,17 @@ class Runtime:
                     artifact(item)
                     if item.get('original'):artifact(item['original'])
                 artifact(preservation['handoff'])
-                merged=load_bound(preservation['merge_verification'])
-                for item in merged['evidence']:artifact(item)
-                require(task['phase']=='completed' and task['merge']['verified'] and merged['source_head']==task['merge']['head_sha']
-                    and merged['main_ref']==state['project']['main_branch'] and merged['contains_source'] is True,'main proof changed')
+                from task_completion import definition, completion_flags, preservation_completion
+                if definition(task)[0]=='read_only':preservation_completion(state,operation['task_id'],preservation,operation['proof_scope'])
+                else:
+                    merged=load_bound(preservation['merge_verification'])
+                    for item in merged['evidence']:artifact(item)
+                    require(task['phase']=='completed' and task['merge']['verified'] and merged['source_head']==task['merge']['head_sha']
+                        and merged['main_ref']==state['project']['main_branch'] and merged['contains_source'] is True,'main proof changed')
                 require(not task.get('publication_dependencies') and not executor.get('shared') and not executor.get('protected')
                     and all(t['phase']=='completed' and t.get('worker_run',{}).get('status')!='running' for t in state['tasks'].values()
                     if t['owner_agent_id']==operation['executor_id']),'new dependency prevents resource release')
-                return dict(verified=True,task_completed_on_main=True,preservation_valid=True,no_active_work=True,
+                return dict(completion_flags(state,operation['task_id']),verified=True,preservation_valid=True,no_active_work=True,
                     no_active_descendants=True,no_release_dependencies=True,exclusive_task_resource=True,
                     cleanup_authorized=operation.get('cleanup_authorized') is True,protected=False)
             require(value['outcome']=='confirmed_not_started' and operation['status'] in ('capacity','unsupported','queued','not_started'),'not a confirmed unused admission')
@@ -513,7 +529,7 @@ def main():
     sub=p.add_subparsers(dest='command',required=True)
     init=sub.add_parser('init');init.add_argument('--coordinator',required=True);init.add_argument('--worker-capacity',type=int,default=4)
     sub.add_parser('recover');sub.add_parser('capabilities')
-    for name in ('apply','prepare','cycle','resolve-next','record-main'):
+    for name in ('apply','prepare','cycle','resolve-next','record-main','complete-read-only'):
         cmd=sub.add_parser(name);cmd.add_argument('input');cmd.add_argument('--actor',required=True)
     args=p.parse_args();runtime=Runtime(args.state_root,args.project_root)
     if args.command=='init': result=runtime.initialize(args.coordinator,worker_capacity=args.worker_capacity)
@@ -521,6 +537,7 @@ def main():
     elif args.command=='capabilities':result=dict(idle_wakeup=False,callbacks_required_for_host_side_effects=True,global_install=False)
     elif args.command=='cycle':result=runtime.cycle(ref(args.input),args.actor)
     elif args.command=='record-main':result=runtime.record_main_inclusion(ref(args.input),args.actor)
+    elif args.command=='complete-read-only':result=runtime.complete_read_only(ref(args.input),args.actor)
     else:
         method={'apply':runtime.apply,'prepare':runtime.prepare,'resolve-next':runtime.resolve_and_next}[args.command]
         result=method(load(args.input),args.actor)

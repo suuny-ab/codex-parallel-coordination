@@ -69,13 +69,16 @@ R3-U01 保留：requested 已关闭事项不能再次 close provided；资料后
 | discussion | 讨论 | register，不启动开发 |
 | backlog | 待开发 | confirm 已有范围、验收和用户依据 |
 | developing | 开发/技术排查中 | start 或带确认数据的 dispatch；返工也在此 |
-| awaiting_acceptance | 待功能验收 | worker 交付；不就绪原因放 blocker/held |
-| awaiting_integration | 待集成 | 当前修订功能接受 |
+| awaiting_acceptance | 待功能验收 | 需要用户验收的 worker 交付；不就绪原因放 blocker/held |
+| awaiting_delivery_review | 只读成果待交付核验 | read_only、delivery_verified 的当前修订已交付，仍需授权交付者核验 |
+| awaiting_integration | 代码待集成／只读待交付核验 | 当前修订已获用户接受；read_only 不运行代码集成 |
 | integrating | 集成中 | 原 worker 准备现有 MR 并开始集成 |
 | awaiting_merge | 待合 main | 已绑定本修订 head/target 的集成通过，仍需审核/新鲜度门禁 |
-| completed | 任务完成 | 本地演练 CAS 后实际核对 main；真实远端本版不支持 |
+| completed | 任务完成，未代表清理完成 | code 经原 MR/CI/验收/集成审核门禁并实际核对 main；read_only 经合法成果核验入口，user_required 还需当前真实用户接受 |
 
 `blocker` 独立保存 reason/owner/category（technical/business/dependency/evidence），不覆盖阶段。`implementation=completed` 只是开发交付，不能直接写任务完成。self_test、quality_review、user_acceptance、integration、review、merge、authorization 分开。自测 passed 但 quality pending 的验收 held；不会标“测试失败”。原始局部状态如 `passed_for_independent_scope_only` 保留，不能升级整体通过。
+
+task_kind 缺省或旧数据保守按 code，代码 main 门禁不变。read_only 的声明、冻结输入、验收类型、交付者当前修订核验、canonical completion 与清理分离，见[只读任务协议](read-only-lifecycle-design.md)。不为只读任务制造 MR/CI，也不把 completed 当作实际 close 或资源释放。
 
 任务唯一 owner、worktree、branch、resources；登记检查任务间嵌套目录、重复 owner/branch/resource，不检查真实 OS 占用。跨项目资源归属由主协调核实；每项目独立账本与 project_id，收件校验项目/任务/owner。项目 `protected` 是绝对路径/hash 数组，可在实例初始化输入中声明；closeout/gate 复核。无数据库或服务探测。
 

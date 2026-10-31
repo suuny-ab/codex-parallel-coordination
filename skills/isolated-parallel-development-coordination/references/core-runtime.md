@@ -11,6 +11,7 @@ python -X utf8 -B scripts/core_runtime.py --state-root ABS_PROFILE_STATE --proje
 python -X utf8 -B scripts/core_runtime.py --state-root ABS_PROFILE_STATE --project-root ABS_PROJECT cycle OBSERVATION.json --actor ACTUAL_DELIVERY_ID
 python -X utf8 -B scripts/core_runtime.py --state-root ABS_PROFILE_STATE --project-root ABS_PROJECT resolve-next ANSWER.json --actor ACTUAL_MAIN_ID
 python -X utf8 -B scripts/core_runtime.py --state-root ABS_PROFILE_STATE --project-root ABS_PROJECT record-main VERIFIED_RESULT.json --actor ACTUAL_DELIVERY_ID
+python -X utf8 -B scripts/core_runtime.py --state-root ABS_PROFILE_STATE --project-root ABS_PROJECT complete-read-only VERIFIED_REVIEW.json --actor ACTUAL_DELIVERY_ID
 ```
 
 state-root 是安装 profile 固定的一项配置，不接受工作消息临时另指定；不同隔离测试 profile 不共享权威。项目根 resolve+normcase 派生 project_id，唯一文件为 state-root/projects/<project_id>/ledger.json。初始化不覆盖，恢复不重建/删历史/抢锁。原 R7 apply/pack/read 工具兼容保留，不能另外维护 manifest/queue/tasks 状态。Runtime.recover 返回 ledger、project_id、revision、summary、handoff、idle_wakeup；未知/过期观察只给最后登记信息。
@@ -35,7 +36,7 @@ adapter = HostAdapter("app_thread", available_tool_names, trusted_invoke, actual
 | app_thread | mcp__codex_app__send_message_to_thread / read_thread | 只已授权既有聊天，禁止 create/fork/archive 代替 agent close |
 | native_agent | spawn_agent / send_input / wait_agent / close_agent / resume_agent | 仅实际工具清单可用且当前授权允许时；缺能力明确 unsupported |
 
-本次运行宿主未暴露 native 工具，不新建/关闭任何真实 agent。App read_thread 的 schemaVersion/thread/turns[].status 结构做过一次本会话只读结构核对，只保留字段名，无会话正文/账号/ID；这不等于完整宿主 E2E。集成者需要按目标宿主确切工具名称绑定 available_tool_names，未提供能力不会被猜测为存在。
+此前作者子上下文未暴露 native 工具，不能据此推断主控制面或整个桌面没有 native 能力。本版组件没有新建/关闭真实 agent。App read_thread 的 schemaVersion/thread/turns[].status 结构曾做本会话只读结构核对，只保留字段名，无会话正文/账号/ID；这不等于完整宿主 E2E。集成者按实际调用上下文的工具名和原始成功语义绑定 available_tool_names，未提供能力不会被猜测为存在。
 
 bind_executor(executor_id, routes, main_actor, authority_ref) 仅绑定真实已控身份；route 按 channel 存 host_id/target_id。跨通道同一身份须明确授权证明，不能同名推断。混合通路 proof.mode=mixed_verified，routes[owner].channels 与 transport.authors[owner].channels 分别绑定每条发送接受/对端确认；最终消息另外绑定 sender/recipient/target/event。失效来源或旧收件者不能靠未变报告放行。
 
@@ -53,17 +54,17 @@ launch(task_id, adapter, attempt_id=..., admission=REF, authorized=True, message
 
 若已接受的本次执行在首次观察前就结束，可以用来源/修订/报告全部核证的终态消费并记 reported，不伪造中间 running。reconcile_launch 仅接受实际未开始的观察证据来解除未知请求；reconcile_lifecycle 仅接受明确 closed 的宿主结果来核清未知 close，idle/completed 不够。
 
-RESOURCE.capacity_release(request_id, permit_id, receipt_ref, verifier) 的 verifier 使用 Runtime.verify_release_receipt(context, receipt)。close 真实确认后或明确从未创建 agent 的未用准入才可 mint release_receipt；failed/unknown/idle/completed 报告均不释放。confirmed_closed 返回 verified/task_completed_on_main/preservation_valid/no_active_work/no_active_descendants/no_release_dependencies/exclusive_task_resource/cleanup_authorized/protected 瞬态事实；confirmed_not_started 仅返回 verified/not_started。事实不另存在 RESOURCE 形成任务账本。
+RESOURCE.capacity_release(request_id, permit_id, receipt_ref, verifier) 的 verifier 使用 Runtime.verify_release_receipt(context, receipt)。close 真实确认后或明确从未创建 agent 的未用准入才可 mint release_receipt；failed/unknown/idle/completed 报告均不释放。confirmed_closed 返回 task_kind=code|read_only、task_completion_verified=true；task_completed_on_main 只对 code 为真、read_only_completion_verified 只对 read_only 为真，另带 verified/preservation_valid/no_active_work/no_active_descendants/no_release_dependencies/exclusive_task_resource/cleanup_authorized=true、protected=false。confirmed_not_started 仅返回 verified/not_started。事实不另存在 RESOURCE 形成任务账本。
 
 ## 完成与清理
 
 record_main_inclusion(proof_ref, delivery_actor) 不执行 merge，只核对已经实际发生的合入：既有用户接受、集成、自测/独审/当前 CI/顺序及 Git 权限仍有效；proof 绑定 project/task/current revision、provider、source_head、previous_main、main_ref、main_head、contains_source 和实际证据。GitHub/GitLab 元数据都可登记。host_verified 来自实际宿主观察，fixture_only 仅隔离演练，不能授权真实回收。
 
-生命周期 guard 需要 task.phase=completed/merge.verified，并重新核对目标 main 包含源码、交付/未入库材料外部保全和知识交接；源/备份 hash 对应，scope 不越界。executor generation、无运行/后代/未完动作、无共享保护/其它任务引用均检查。close 真正成功才记 lease=closed；仅 completed 或不明确成功记 unknown，继续占位。重复 operation_id 不重复调用。失效保全或旧 generation 拒绝。已完成任务不 resume；bug 由最新 main 新任务关联旧记录。未完成任务遭外部宿主丢失时，resume 也需要新准入，成功只记 resumed，不假定上下文/执行已恢复。
+生命周期 guard 需要合法 task.phase=completed：code 仍核 merge.verified 和目标 main 包含源码；read_only 核当前 canonical completion、交付委托、报告修订和只读输入，保全清单绑定 completion_verification。两者均核交付/未入库材料外部保全和知识交接、源/备份 hash 及 scope。executor generation、无运行/后代/未完动作、无共享保护/其它任务引用均检查。close 真正成功才记 lease=closed；仅 completed 或不明确成功记 unknown，继续占位。重复 operation_id 不重复调用。失效保全或旧 generation 拒绝。已完成任务不 resume；bug 由最新 main 新任务关联旧记录。外部未完成任务失联恢复仍需另行合法导入边界，本次没有新增该入口。
 
 register_resource(task_id, resource, authority_ref, delivery_actor) 将明确资源归属存同一账本。文件资源须在该项目管理的 cleanup_root 内；默认为 ledger 同级 resources/，不接收任意系统目录。agent/process 需要准确 executor/generation 或受管 process_identity；不会扫描/杀全局进程或删别的工作树。
 
-cleanup_task(task_id, operation_id, preservation_ref, trusted_invoke, delivery_actor, authorized=True, scope=...) 先校验合 main/保全/独占或共享已无引用/无工作后代/保护/依赖，再持锁逐资源登记 intent 和结果。trusted_invoke(resource) 是具体已授权宿主或 RESOURCE 动作，返回 status=cleaned/failed/unknown，cleaned 必须有可核证据；agent 另需 closed=true。不能把 task completed、termination_requested 或发送接受当 cleanup completed。
+cleanup_task(task_id, operation_id, preservation_ref, trusted_invoke, delivery_actor, authorized=True, scope=...) 先校验对应 task_kind 的合法完成、保全、独占或共享已无引用、无工作后代/保护/依赖，再持锁逐资源登记 intent 和结果。trusted_invoke(resource) 是具体已授权宿主或 RESOURCE 动作，返回 status=cleaned/failed/unknown，cleaned 必须有可核证据；agent 另需 closed=true。不能把 task completed、termination_requested 或发送接受当 cleanup completed。
 
 agent close 只走 Runtime.lifecycle 单一路径并 mint release_receipt；资源聚合入口只核证该 canonical close，不另调第二次 close。工作树/文件清理完成但 agent 尚未明确 closed 时，整体仍是 pending_cleanup。RESOURCE 的目录动作若返回组件级 pending_cleanup，bridge 须映射单资源 failed/unknown 并保留原 receipt，不把它改写为成功。
 

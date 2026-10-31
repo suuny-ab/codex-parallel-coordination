@@ -4,6 +4,7 @@ from pathlib import Path
 
 from coordination import writer_lock
 from evidence import artifact, load_bound, require, write_atomic, fingerprint, ref, io_path
+from task_completion import definition, verified, preservation_completion, completion_flags
 
 KINDS={'agent','process','worktree','database','environment','artifact'}
 
@@ -38,15 +39,18 @@ def register(runtime, task_id, resource, authority_ref, actor_id):
 
 def eligibility(runtime,state,task_id,preservation_ref,scope):
     task=state['tasks'][task_id]
-    require(task['phase']=='completed' and task.get('merge',{}).get('verified'),'task not completed on target main')
+    if definition(task)[0]=='read_only':verified(state,task_id)
+    else:require(task['phase']=='completed' and task.get('merge',{}).get('verified'),'task not completed on target main')
     require(not task.get('publication_dependencies'),'release dependency still uses development resources')
     inventory=load_bound(preservation_ref)
-    proof=load_bound(inventory['merge_verification'])
-    require(proof.get('project_id')==runtime.project_id and proof.get('task_id')==task_id and
-        proof.get('source_head')==task['merge'].get('head_sha') and proof.get('main_head') and
-        proof.get('main_ref')==state['project']['main_branch'] and proof.get('contains_source') is True and
-        proof.get('scope')==scope and proof.get('evidence'),'target main proof mismatch')
-    for item in proof['evidence']:artifact(item)
+    if definition(task)[0]=='read_only':preservation_completion(state,task_id,inventory,scope)
+    else:
+        proof=load_bound(inventory['merge_verification'])
+        require(proof.get('project_id')==runtime.project_id and proof.get('task_id')==task_id and
+            proof.get('source_head')==task['merge'].get('head_sha') and proof.get('main_head') and
+            proof.get('main_ref')==state['project']['main_branch'] and proof.get('contains_source') is True and
+            proof.get('scope')==scope and proof.get('evidence'),'target main proof mismatch')
+        for item in proof['evidence']:artifact(item)
     require(inventory.get('files') and inventory.get('unregistered_evidence_preserved') is True,'external evidence preservation required')
     for item in inventory['files']:
         require(not artifact(item).resolve().is_relative_to(runtime.project_root),'preservation must outlive project resources')
@@ -169,7 +173,7 @@ def verify(runtime,context,proof):
         if resource.get('shared'):
             unused=load_bound(resource['unused_proof'])
             require(unused.get('resource_id')==resource['id'] and unused.get('active_references')==[],'shared resource still in use')
-        return dict(verified=True,task_completed_on_main=True,preservation_valid=True,no_active_work=True,
+        return dict(completion_flags(state,value['task_id']),verified=True,preservation_valid=True,no_active_work=True,
             no_active_descendants=True,no_release_dependencies=True,exclusive_task_resource=True,cleanup_authorized=True,protected=False)
     except (ValueError,KeyError,TypeError,OSError):return dict(verified=False)
 

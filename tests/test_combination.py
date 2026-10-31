@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "skills/isolated-parallel-development-coordination/scripts"))
 import test_core_runtime as core_tests
+import test_read_only_completion as read_only_tests
 from evidence import load, ref
 from codex_parallel_coordination.bridge import ResourceBridge
 from codex_parallel_coordination.resources import ArtifactCleanup, Controller
@@ -33,6 +34,9 @@ class Combination(core_tests.CoreFixture):
         if provenance.get("delivery_revision", 0) < 2:
             self.skipTest("RESOURCE R1 has independent findings; wait for frozen author revision 2")
         super().setUp()
+        self.set_up_resources()
+
+    def set_up_resources(self):
         self.managed = Path(self.runtime._load()["runtime"]["cleanup_root"])
         self.managed.mkdir(parents=True)
         other = self.root / "other-project"
@@ -68,11 +72,12 @@ class Combination(core_tests.CoreFixture):
                                    preservation_ref=preservation, authorized=True)
         return quota
 
-    def register(self, identity, path, core_kind="environment", resource_kind="temporary_directory", metadata=None):
+    def register(self, identity, path, core_kind="environment", resource_kind="temporary_directory", metadata=None, actor_id=None):
         self.runtime.register_resource("A", {"id": identity, "kind": core_kind, "path": str(path)},
-                                       self.file(identity + "-registration"), self.actor)
+                                       self.file(identity + "-registration"), actor_id or self.actor)
         spec = {"resource_id": identity, "project_id": self.runtime.project_id, "task_id": "A",
-                "attempt_id": "original-run", "kind": resource_kind, "path": str(path),
+                "attempt_id": self.runtime._load()["tasks"]["A"].get("worker_run", {}).get("attempt_id", "original-run"),
+                "kind": resource_kind, "path": str(path),
                 "references": [], "protected": False, "metadata": metadata or {}}
         self.artifacts.register(spec)
         return spec
@@ -202,3 +207,111 @@ class Combination(core_tests.CoreFixture):
         result = self.cleanup("must-preserve-child")
         self.assertEqual(result["status"], "pending_cleanup")
         self.assertEqual(child.read_bytes(), b"belongs to another active task")
+
+
+class ReadOnlyCombination(read_only_tests.ReadOnlyFixture):
+    """Public completion plus real RESOURCE operations; host replies are fixtures."""
+
+    set_up_resources = Combination.set_up_resources
+
+    def setUp(self):
+        super().setUp()
+        self.set_up_resources()
+
+    def register(self, identity, path, core_kind="environment", resource_kind="temporary_directory", metadata=None):
+        return Combination.register(self, identity, path, core_kind, resource_kind, metadata, self.reviewer)
+
+    def permit(self, task="A", attempt="attempt1", executor=None):
+        spec = dict(request_id="request-" + attempt, project_id=self.runtime.project_id,
+                    task_id=task, attempt_id=attempt, launch_identity=executor or "worker-A",
+                    resource_class="agent_execution_slot")
+        self.admission = self.bridge.admit(self.json(attempt + "-resource.json", spec))
+        self.assertEqual(self.admission["status"], "granted")
+        return self.admission["admission"]
+
+    def complete_and_close(self):
+        proof = self.proof()
+        self.runtime.complete_read_only(proof, self.reviewer)
+        self.preservation = self.preserve(proof)
+        self.host_calls = []
+        adapter = read_only_tests.HostAdapter("native_agent", ["close_agent"],
+                    lambda *args: self.host_calls.append(args) or {"closed": True}, self.reviewer)
+        self.runtime.lifecycle("close", "worker-A", "A", "readonly-close", 1, adapter,
+                               preservation_ref=self.preservation, authorized=True)
+
+    def cleanup(self, operation):
+        return self.runtime.cleanup_task("A", operation, self.preservation, self.bridge.cleanup,
+                                         self.reviewer, authorized=True)
+
+    def test_current_read_only_completion_releases_actual_quota_and_cleans_owned_database(self):
+        self.delivered()
+        queued = dict(request_id="next-task", project_id="other", task_id="B", attempt_id="B-1",
+                      launch_identity="worker-B", resource_class="agent_execution_slot")
+        self.assertEqual(self.controller.capacity_acquire(self.json("next.json", queued)["path"])["status"], "queued")
+        self.complete_and_close()
+        task = self.runtime._load()["tasks"]["A"]
+        self.assertEqual(task["phase"], "completed")
+        self.assertIsNone(task["mr"])
+        self.assertIsNone(task["merge"])
+        released = self.bridge.release_agent_quota("readonly-close", self.reviewer)
+        self.assertEqual(released["newly_granted"], ["next-task"])
+        self.assertFalse(released["process_memory_or_acceptance_storage_released"])
+        database = self.managed / "readonly.sqlite"
+        with closing(sqlite3.connect(database)) as connection:
+            connection.execute("CREATE TABLE findings(id INTEGER)")
+            connection.commit()
+        self.register("readonly-db", database, "database", "temporary_database")
+        self.assertEqual(self.cleanup("readonly-cleanup")["status"], "cleanup_completed")
+        self.assertFalse(database.exists())
+        self.assertEqual(len(self.host_calls), 1)
+        self.assertTrue(self.bridge.release_agent_quota("readonly-close", self.reviewer)["duplicate"])
+
+    def test_user_acceptance_protects_actual_resources_and_slot_until_current_acceptance(self):
+        self.delivered("user_required")
+        path = self.managed / "waiting-user"
+        path.mkdir()
+        self.register("waiting", path)
+        with self.assertRaises(ValueError):
+            self.runtime.complete_read_only(self.proof(), self.reviewer)
+        self.assertTrue(path.exists())
+        self.assertEqual(self.runtime._load()["runtime"]["executors"]["worker-A"]["lease"], "open")
+        self.accept()
+        self.complete_and_close()
+        self.assertEqual(self.cleanup("after-acceptance")["status"], "cleanup_completed")
+        self.assertFalse(path.exists())
+
+    def test_read_only_unknown_remove_reconciles_without_second_remove(self):
+        self.delivered()
+        self.complete_and_close()
+        path = self.managed / "unknown-readonly"
+        path.write_text("disposable findings", encoding="utf-8")
+        calls = []
+        class UnknownAfterRemove(TemporaryFilesystem):
+            def remove(adapter, spec, identity):
+                calls.append(spec["resource_id"])
+                super().remove(spec, identity)
+                return {"status": "unknown"}
+        self.artifacts.adapters["temporary_file"] = UnknownAfterRemove()
+        self.register("unknown-readonly", path, "artifact", "temporary_file")
+        self.assertEqual(self.cleanup("readonly-unknown")["status"], "pending_cleanup")
+        self.bridge.reconcile_cleanup("A", "unknown-readonly", self.reviewer)
+        self.assertEqual(self.cleanup("readonly-reconciled")["status"], "cleanup_completed")
+        self.assertEqual(calls, ["unknown-readonly"])
+
+    def test_partial_cleanup_of_audited_input_preserves_completion_and_recovers_remaining(self):
+        self.delivered(managed_input=True)
+        self.complete_and_close()
+        self.register("audited-input", self.input)
+        database = self.managed / "held-readonly.sqlite"
+        with closing(sqlite3.connect(database)) as connection:
+            connection.execute("CREATE TABLE findings(id INTEGER)")
+            connection.commit()
+        self.register("held-readonly", database, "database", "temporary_database")
+        with closing(sqlite3.connect(database)) as held:
+            held.execute("SELECT * FROM findings").fetchall()
+            self.assertEqual(self.cleanup("readonly-partial")["status"], "pending_cleanup")
+            self.assertFalse(self.input.exists())
+            self.assertTrue(database.exists())
+        self.assertEqual(self.cleanup("readonly-recovered")["status"], "cleanup_completed")
+        self.assertFalse(database.exists())
+        self.assertEqual(self.runtime._load()["tasks"]["A"]["phase"], "completed")

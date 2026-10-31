@@ -1,16 +1,17 @@
 {
   "component": "CORE",
-  "version": "1.0.2",
+  "version": "1.1.1",
   "delivery_revision": 3,
-  "report_sha256": "b703faf0b0091f16e6f286a3a8d185545c3e23b40531570098f1aecbbb2ac66f",
-  "manifest_sha256": "c087e67d08d713f7a5069bcfc391bbb353728fe8b460752c555ef21a464ed663",
-  "source_digest": "e4007626a7492f0141858a85cf910d46c2b0c0f192cf998a0495fadd1c3f8c90",
-  "runtime_modified": false,
-  "report_label": "2026-10-31/core/CORE_IMPLEMENTATION_R3.json",
+  "documentation_revision": 3,
+  "report_label": "2026-10-31/core/CORE_READONLY_IMPLEMENTATION_R3.json",
+  "report_sha256": "5b3c58ad05c3dbd5a2a11ccefa95e87bc091958b004ec59f96b99ccf19ccae34",
+  "manifest_sha256": "ff853ac71d82b373037d6713437dceddf4d4f81233e37b4f0aaf38a70efe71e5",
+  "runtime_modified": true,
+  "base_commit": "e425ecedcceb38d986dd331be419dc69d6672a55",
   "files": [
     {
       "path": "skills/isolated-parallel-development-coordination/SKILL.md",
-      "sha256": "eee7c192d0cb6a881902053be354dda28232170ba61e3ad19a5f462317c4a7f8"
+      "sha256": "ce29f5c98992e9c2c1a4a42e48c87b82a3fa3f0d934c5a348671e8b0d472f391"
     },
     {
       "path": "skills/isolated-parallel-development-coordination/fixtures/redacted-trajectories.json",
@@ -18,7 +19,7 @@
     },
     {
       "path": "skills/isolated-parallel-development-coordination/references/core-runtime.md",
-      "sha256": "1bbf731321fc5563e83b1c8910f45c8b779e8718c9b9b27542f35aaf4f61655f"
+      "sha256": "08b0f976b90878ea28163a6167a5c2839732f2ea4731c0ebb125d6d4ba5d89eb"
     },
     {
       "path": "skills/isolated-parallel-development-coordination/references/delivery-delegation.md",
@@ -33,8 +34,12 @@
       "sha256": "e53b0ca03d38a0712949a62eaa3ee74df7a19e6c9ce1cb1d748dd5044a834e75"
     },
     {
+      "path": "skills/isolated-parallel-development-coordination/references/read-only-lifecycle-design.md",
+      "sha256": "6e954cb0b1a216832db10479abac970f2a628a9eb1906e8ab0cb2e8b63d17c4d"
+    },
+    {
       "path": "skills/isolated-parallel-development-coordination/references/state-protocol.md",
-      "sha256": "ded35d3940f647f263076fdbfe9cac859782127a7926639bfb16590b1ed0b46a"
+      "sha256": "063d28a12a1b8a4532e88c10ec29e278639446ef56895f0c6edb23f801b89911"
     },
     {
       "path": "skills/isolated-parallel-development-coordination/references/task-and-report-templates.md",
@@ -42,11 +47,11 @@
     },
     {
       "path": "skills/isolated-parallel-development-coordination/scripts/cleanup.py",
-      "sha256": "d32fa741bf9f34c56d8183e45e37cdf6da0f58eec7a6993067658b52510b9fba"
+      "sha256": "8f0a7689b17fb4289f76453776d292336de041ba4e5b56d6a312bc56f9301a50"
     },
     {
       "path": "skills/isolated-parallel-development-coordination/scripts/coordination.py",
-      "sha256": "b4d798cf596741a481c31f65936bc461699958d7c63bec183f545785225e95b5"
+      "sha256": "1b2d2abb4d8d96b9b7c15b758f1f7506886dc139c9d335d31e37942111eddcaf"
     },
     {
       "path": "skills/isolated-parallel-development-coordination/scripts/coordination_v1.py",
@@ -54,7 +59,7 @@
     },
     {
       "path": "skills/isolated-parallel-development-coordination/scripts/core_runtime.py",
-      "sha256": "c09cd7abd81a8022e6e638ffca9bd143e38e4813c1b1325905cfe9dc3975c825"
+      "sha256": "a39da70e188cb745dd910f79957f08caa0b6298f867823ad64ff08b2c84bc2db"
     },
     {
       "path": "skills/isolated-parallel-development-coordination/scripts/delegation_demo.py",
@@ -62,7 +67,7 @@
     },
     {
       "path": "skills/isolated-parallel-development-coordination/scripts/delivery.py",
-      "sha256": "f47f788124f8ac03c5a086fabebfddf2dfa3b15fb42b222a539bd96ccd5a6138"
+      "sha256": "186cf2f0b53d735143fd3621bfb20cc722eb6862eea2885b4c4bb51ab5422f25"
     },
     {
       "path": "skills/isolated-parallel-development-coordination/scripts/demo.py",
@@ -70,7 +75,7 @@
     },
     {
       "path": "skills/isolated-parallel-development-coordination/scripts/evidence.py",
-      "sha256": "7aec4a5c62be415cbcc5a43ab1176611e45691f1fd851546098646b1296b2286"
+      "sha256": "244c3d63de1a6df0decaab733670e27cedb250e60f221425550d596a27d78686"
     },
     {
       "path": "skills/isolated-parallel-development-coordination/scripts/host_adapter.py",
@@ -78,7 +83,7 @@
     },
     {
       "path": "skills/isolated-parallel-development-coordination/scripts/merge_gate.py",
-      "sha256": "9106e20171812bcf914a4fe6648d859537619b3c7f5053f93d7d859c817e6e43"
+      "sha256": "e015e6aafc80ad971b1aa9c23e7d4006c02cbca9db8526e80bb2343b96aeda2a"
     },
     {
       "path": "skills/isolated-parallel-development-coordination/scripts/preservation_check.py",
@@ -86,7 +91,7 @@
     },
     {
       "path": "skills/isolated-parallel-development-coordination/scripts/progress.py",
-      "sha256": "406d9fe74ef0567e8369da037847c91ab2a29b53018087b986647adcbc2539fd"
+      "sha256": "7f67dff193b390e1e8d73ade0cd041ac0b4176291f656f7984cec2fbc72f5c88"
     },
     {
       "path": "skills/isolated-parallel-development-coordination/scripts/progress_demo.py",
@@ -105,12 +110,16 @@
       "sha256": "e6957aab556a5bff71e6fa1b1bd088398266cf8dc86645a99fb2219a2d52942f"
     },
     {
+      "path": "skills/isolated-parallel-development-coordination/scripts/task_completion.py",
+      "sha256": "6d74349257e30794b81c0e4ba2bc8c4dedaf315b8f41e9cf1996fe88ba2c7b80"
+    },
+    {
       "path": "skills/isolated-parallel-development-coordination/scripts/test_cleanup_longpaths_r3.py",
       "sha256": "68e41708492763b89ec2083fd02a883cc4f6ad996885e518e6fd7eb129ef51fc"
     },
     {
       "path": "skills/isolated-parallel-development-coordination/scripts/test_cleanup_runtime.py",
-      "sha256": "5469ad4eea621159741a68d5787b0fc6ad6e5a15b0ca44684d9fd584c56996fc"
+      "sha256": "aa0358480b066ae4fe6bf13a855506c24d67889f2efac1935ff778fe6e63d2e3"
     },
     {
       "path": "skills/isolated-parallel-development-coordination/scripts/test_closeout_process.py",
@@ -169,6 +178,10 @@
       "sha256": "301d3d2edb7d9b7ce6efcdb758734fe6437a43db28f7f9ef539ffa2b82c9d3a2"
     },
     {
+      "path": "skills/isolated-parallel-development-coordination/scripts/test_read_only_completion.py",
+      "sha256": "bef0bec37a7e77256ba3e661b14396d7c839ae4e1974d4934f6a183fa9a34a46"
+    },
+    {
       "path": "skills/isolated-parallel-development-coordination/scripts/test_review_regressions.py",
       "sha256": "f681346166eb0a0125ed9ca531dd54ae14b6fa3eab5c9d0959e530eb60656df0"
     },
@@ -180,5 +193,27 @@
       "path": "skills/isolated-parallel-development-coordination/scripts/worker_fixture.py",
       "sha256": "29a9196299c1e195c7c7cc528570ad7ca02eb548d23ce71fbdf675e348a19790"
     }
-  ]
+  ],
+  "test_inheritance": "Current runtime/test byte equivalence from independently executed r2; new docs require bound readability and formal validator, not a fresh entire-source full-run claim",
+  "author_source_digest": "12540e769c31dfd620860148ab21873c1eaef593efa083801f3b4118a7c3fdea",
+  "integration_adjustment": {
+    "scope": "Two terminal blank lines removed; no AST change",
+    "kind": "EOF-format-only",
+    "files": [
+      {
+        "path": "task_completion.py",
+        "old_sha256": "6054301f8888c3b3118466f4ea1b243f9110f54d8cfeff1a1bad6ad5670ab0eb",
+        "new_sha256": "6d74349257e30794b81c0e4ba2bc8c4dedaf315b8f41e9cf1996fe88ba2c7b80",
+        "removed_bytes": 1,
+        "AST_equal": true
+      },
+      {
+        "path": "test_read_only_completion.py",
+        "old_sha256": "0283ecf462f5bd8b9d5a633560aedbcc13259380a2d44f0a54460da31c4f3ab7",
+        "new_sha256": "bef0bec37a7e77256ba3e661b14396d7c839ae4e1974d4934f6a183fa9a34a46",
+        "removed_bytes": 1,
+        "AST_equal": true
+      }
+    ]
+  }
 }
