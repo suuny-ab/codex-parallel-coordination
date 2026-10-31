@@ -7,6 +7,8 @@ from evidence import artifact, git, load_bound, report_for, require
 
 def integration_result(state, task_id, report_ref):
     task, result = state["tasks"][task_id], load_bound(report_ref)
+    from task_completion import definition
+    require(definition(task)[0]=='code','read-only tasks do not use code integration')
     report, mr = report_for(state, task_id), task["mr"]
     require(mr and task["user_acceptance"] == "accepted", "acceptance/MR missing")
     require(result["task_id"] == task_id and result["project_id"] == state["project"]["id"] and
@@ -31,6 +33,8 @@ def gate(state, task_id, target_override=None, actor_id=None):
     for value in state["project"]["protected"]:
         artifact(value)
     task = state["tasks"][task_id]
+    from task_completion import definition
+    require(definition(task)[0]=='code','read-only tasks do not use code merge gates')
     require(task["phase"] == "awaiting_merge" and not task["blocker"], "task not ready for merge")
     for right in ("commit", "push", "mr", "merge"):
         require(task["authorization"][right]["allowed"] and task["authorization"][right]["user_reference"],
@@ -72,6 +76,8 @@ def gate(state, task_id, target_override=None, actor_id=None):
 def merge_transition(state, op):
     name, task = op["op"], state["tasks"].get(op.get("task_id"))
     if name == "mr":
+        from task_completion import definition
+        require(task and definition(task)[0]=='code','read-only tasks do not create an MR')
         require(task and task["authorization"]["mr"]["allowed"], "MR maintenance not authorized")
         require(task["phase"] != "completed", "completed MR immutable")
         mr = op["mr"]

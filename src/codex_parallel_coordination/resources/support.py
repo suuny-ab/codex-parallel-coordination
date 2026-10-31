@@ -20,13 +20,47 @@ def text(value):
 
 def cleanup_verified(facts):
     require(isinstance(facts, dict) and all(facts.get(k) is True for k in (
-        'verified', 'task_completed_on_main', 'preservation_valid', 'no_active_work', 'no_active_descendants',
+        'verified', 'preservation_valid', 'no_active_work', 'no_active_descendants',
         'no_release_dependencies', 'exclusive_task_resource', 'cleanup_authorized')) and facts.get('protected') is False,
-        'cleanup requires canonical target-main completion, handoff, exclusive ownership and authority; pending_cleanup')
+        'cleanup requires canonical handoff, exclusive ownership and authority; pending_cleanup')
+    if 'task_kind' not in facts:  # Legacy CORE facts have only the code/main completion gate.
+        completed = facts.get('task_completed_on_main') is True
+    else:
+        kind = facts['task_kind']
+        completed = facts.get('task_completion_verified') is True and (
+            kind == 'code' and facts.get('task_completed_on_main') is True and facts.get('read_only_completion_verified') is False or
+            kind == 'read_only' and facts.get('task_completed_on_main') is False and facts.get('read_only_completion_verified') is True)
+    require(completed, 'cleanup requires canonical current completion: code on main or verified read_only; pending_cleanup')
+
+
+def _io_path(path):
+    path = Path(path)
+    value = str(path)
+    if os.name == 'nt' and path.is_absolute() and len(value) >= 260 and not value.startswith('\\\\?\\'):
+        return Path('\\\\?\\UNC\\' + value[2:] if value.startswith('\\\\') else '\\\\?\\' + value)
+    return path
+
+
+def _open_read(path):
+    if os.name != 'nt':
+        return _io_path(path).open('rb')
+    import _winapi
+    import msvcrt
+    # Read access only; SHARE_READ|SHARE_WRITE|SHARE_DELETE lets atomic rename
+    # coexist with readers of the previous immutable file version. No ACL change.
+    handle = _winapi.CreateFile(str(_io_path(path)), _winapi.GENERIC_READ, 0x7,
+                               0, _winapi.OPEN_EXISTING, 0x80, 0)
+    try:
+        descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
+    except OSError:
+        _winapi.CloseHandle(handle)
+        raise
+    return os.fdopen(descriptor, 'rb')  # Closing this stream also owns/closes the handle.
 
 
 def load(path):
-    return json.loads(Path(path).read_text(encoding='utf-8-sig'))
+    with _open_read(path) as stream:
+        return json.loads(stream.read().decode('utf-8-sig'))
 
 
 def fingerprint(value):
@@ -34,13 +68,14 @@ def fingerprint(value):
 
 
 def ref(path):
-    path = Path(path).resolve(strict=True)
-    return {'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+    path = Path(path).resolve()
+    with _open_read(path) as stream:
+        return {'path': str(path), 'sha256': hashlib.sha256(stream.read()).hexdigest()}
 
 
 def artifact(value):
     path = Path(value['path'])
-    require(path.is_absolute() and path.is_file(), 'artifact missing or not absolute')
+    require(path.is_absolute() and _io_path(path).is_file(), 'artifact missing or not absolute')
     require(ref(path)['sha256'] == value['sha256'], 'artifact hash mismatch')
     return path
 
@@ -49,20 +84,42 @@ def load_bound(value):
     return load(artifact(value))
 
 
+def _replace_atomic(temporary, path):
+    if os.name == 'nt' and _io_path(path).exists():
+        import ctypes
+        replace = ctypes.WinDLL('kernel32', use_last_error=True).ReplaceFileW
+        replace.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_wchar_p,
+                            ctypes.c_ulong, ctypes.c_void_p, ctypes.c_void_p]
+        replace.restype = ctypes.c_int
+        if not replace(str(_io_path(path)), str(_io_path(temporary)), None, 0, None, None):
+            raise ctypes.WinError(ctypes.get_last_error())
+    else:
+        os.replace(_io_path(temporary), _io_path(path))
+
+
 def write_atomic(path, value):
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _io_path(path.parent).mkdir(parents=True, exist_ok=True)
     temporary = path.with_name('.res-' + uuid.uuid4().hex[:16] + '.tmp')
+    preserve_temporary = False
     try:
-        with temporary.open('x', encoding='utf-8', newline='\n') as stream:
+        with _io_path(temporary).open('x', encoding='utf-8', newline='\n') as stream:
             json.dump(value, stream, ensure_ascii=False, indent=2)
             stream.write('\n')
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        try:
+            _replace_atomic(temporary, path)
+        except OSError as error:
+            # ReplaceFileW documents partial outcomes for these two codes. Keep
+            # the new fsynced snapshot for explicit recovery, never retry/truncate.
+            preserve_temporary = getattr(error, 'winerror', None) in (1176, 1177)
+            if preserve_temporary:
+                error.strerror = (error.strerror or 'Uncertain replacement') + '; preserved snapshot: ' + str(temporary)
+            raise
     finally:
-        if temporary.exists():
-            temporary.unlink()  # Only the exact UUID file created by this call.
+        if not preserve_temporary and _io_path(temporary).exists():
+            _io_path(temporary).unlink()  # Only the exact UUID file created by this call.
 
 
 @contextmanager

@@ -213,7 +213,10 @@ def apply(state, op):
                 len(order) == len(ids) and set(order) == set(ids), "concrete task scope and merge order required")
         require(all(state["tasks"][key]["owner_agent_id"] != op["agent_id"] for key in ids), "independent delivery reviewer required")
         artifact(op["authority_evidence"])
-        require(op.get("required_ci_jobs") and all(isinstance(x, str) and x.strip() for x in op["required_ci_jobs"]), "required CI jobs must be explicit")
+        jobs=op.get('required_ci_jobs')
+        from task_completion import definition
+        require(isinstance(jobs,list) and all(isinstance(x,str) and x.strip() for x in jobs) and
+            (jobs or all(definition(state['tasks'][key])[0]=='read_only' for key in op['task_ids'])), 'required CI jobs must be explicit for code tasks')
         owners = {state["tasks"][key]["owner_agent_id"] for key in ids}
         require(set(op["routes"]) == owners, "explicit authorized existing author routes required")
         for route in op["routes"].values():

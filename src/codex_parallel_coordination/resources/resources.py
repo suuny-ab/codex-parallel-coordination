@@ -318,7 +318,7 @@ class Controller:
         return result
 
     def task_cleanup(self, key, project, task, nonce, proof_ref, verifier=None):
-        """After-main dedicated task environment cleanup; not ordinary process exit."""
+        """Canonical completed-task environment cleanup; not ordinary process exit."""
         with self.transaction():
             state, policy = self.read()
             request = state['requests'][key]
@@ -402,7 +402,7 @@ class Controller:
                         identity = (member['pid'], member['created'])
                         unique.setdefault(identity, dict(member, requests=[]))['requests'].append(key)
                 requests.append(view)
-            return {'schema': 'coordination-resource-snapshot/1', 'component_version': '1.1.1', 'resource_revision': state['revision'],
+            return {'schema': 'coordination-resource-snapshot/1', 'component_version': '1.1.2', 'resource_revision': state['revision'],
                     'observed_at': time.time(), 'project_id': project_id, 'requests': requests,
                     'system_memory': self.memory(), 'unique_processes': list(unique.values()),
                     'capacity_permits': [copy.deepcopy(r) for r in state['capacity_requests'].values()

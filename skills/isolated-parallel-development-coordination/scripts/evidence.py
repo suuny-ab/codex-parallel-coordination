@@ -118,7 +118,15 @@ def report_for(state, task_id, ready=True):
             and report["delivery_revision"] == task["delivery_revision"], "report identity mismatch")
     require(Path(report["source"]["root"]).resolve() == Path(task["worktree"]).resolve(),
             "source outside registered worktree")
-    verify_source(report["source"])
+    if task.get('task_kind')=='read_only' and task['phase']=='completed' and not Path(task['worktree']).exists():
+        cleaned=[r for r in state.get('runtime',{}).get('resources',{}).values() if r.get('task_id')==task_id and
+            r.get('cleanup_status')=='cleaned' and r.get('path') and Path(task['worktree']).resolve().is_relative_to(Path(r['path']).resolve())]
+        require(cleaned,'read-only source disappeared outside confirmed owned cleanup')
+        for resource in cleaned:artifact(resource['cleanup_result']['evidence'])
+    else:verify_source(report["source"])
+    if task.get('task_kind')=='read_only':
+        require(report['source']==task['requirements']['source_baseline'],'read-only source changed from confirmed baseline')
+        require(report.get('task_kind')=='read_only' and report.get('acceptance_type')==task['acceptance_type'],'report task kind/acceptance type mismatch')
     require(report["evidence"], "test evidence required")
     for value in report["evidence"]:
         artifact(value)

@@ -11,10 +11,11 @@ import sys
 
 from evidence import (ERRORS, artifact, digest, fingerprint, load, load_bound, pack, presentation_view, ref,
                       report_for, require, write_atomic)
+from task_completion import definition, confirmed
 
 SCHEMA = "parallel-coordination/2"
 PHASES = ("discussion", "backlog", "developing", "awaiting_acceptance",
-          "awaiting_integration", "integrating", "awaiting_merge", "completed")
+          "awaiting_integration", "integrating", "awaiting_merge", "completed", "awaiting_delivery_review")
 RIGHTS = ("commit", "push", "mr", "merge", "deploy")
 
 
@@ -39,7 +40,7 @@ def task_base(owner, worktree, branch, resources):
             "user_acceptance": "pending", "integration": {"status": "pending"}, "review": None,
             "merge": None, "mr": None, "delivery": None, "authorization": deny_rights(),
             "history": [], "report_path": None, "report_task_id": None, "report_format": "v2",
-            "blocker_followup": None}
+            "blocker_followup": None, "task_kind": "code", "acceptance_type": "user_required"}
 
 
 def validate(state):
@@ -59,6 +60,7 @@ def validate(state):
     require(active == ([] if state["active_human_item"] is None else
                        [state["active_human_item"]]), "inconsistent human focus")
     for task in state["tasks"].values():
+        kind,mode=definition(task)
         require(task["phase"] in PHASES and set(task["authorization"]) == set(RIGHTS), "bad task/rights")
         require(type(task["delivery_revision"]) is int and task["delivery_revision"] >= 0, "bad task revision")
         require(isinstance(task["history"], list), "task history missing")
@@ -66,7 +68,13 @@ def validate(state):
             require(type(right["allowed"]) is bool and (not right["allowed"] or right["user_reference"]),
                     "unattributed authorization")
         if task["phase"] == "completed":
-            require(task.get("merge", {}).get("verified") is True, "main not verified")
+            if kind=='code':require(task.get("merge", {}).get("verified") is True, "main not verified")
+            else:
+                completion=task.get('completion') or {}
+                require(completion.get('basis')=='read_only_delivery_review' and completion.get('task_kind')==kind and
+                    completion.get('acceptance_type')==mode and completion.get('delivery_revision')==task['delivery_revision'] and
+                    completion.get('report')==task['delivery'] and completion.get('owner_agent_id')==task['owner_agent_id'],
+                    'read-only completion binding missing or changed')
     for key, item in state["items"].items():
         require(key == item["id"] and item["status"] in
                 ("queued", "active", "waiting_user", "closed", "superseded"), "bad human item")
@@ -398,8 +406,9 @@ def summary(state):
     result = {"project_id": state["project"]["id"], "revision": state["revision"],
             "focus": state["active_human_item"], "action": check["action"],
             "next": check["next"]["id"] if check["next"] else None,
-            "tasks": {k: {key: t[key] for key in ("phase", "implementation", "blocker", "delivery_revision",
-                "self_test", "quality_review", "user_acceptance", "integration", "mr", "merge")}
+            "tasks": {k: dict({key: t[key] for key in ("phase", "implementation", "blocker", "delivery_revision",
+                "self_test", "quality_review", "user_acceptance", "integration", "mr", "merge")},
+                task_kind=definition(t)[0],acceptance_type=definition(t)[1],completion=t.get('completion'))
                 for k, t in state["tasks"].items()},
             "worker_runs": {k: t.get("worker_run") for k, t in state["tasks"].items()},
             "blocker_followups": {k: t.get("blocker_followup") for k, t in state["tasks"].items()
@@ -508,10 +517,15 @@ def consume(state, payload):
         # This candidate transaction has consumed the verified origin. Bind it before
         # readiness checks the new delivery; the outer transition saves atomically.
         state["receipts"][payload["event_id"]]["status"] = "processed"
-        enqueue(state, {"id": payload["event_id"], "kind": "acceptance", "task_id": task_id,
-            "delivery_revision": revision, "title": report["summary"],
-            "prompt": "Review this revision using its entry, steps and expected result."})
-        reasons = readiness(state, state["items"][payload["event_id"]])
+        if definition(task)==('read_only','delivery_verified'):
+            task['phase']='awaiting_delivery_review'
+            try:report_for(state,task_id);reasons=[]
+            except ERRORS as error:reasons=[str(error)]
+        else:
+            enqueue(state, {"id": payload["event_id"], "kind": "acceptance", "task_id": task_id,
+                "delivery_revision": revision, "title": report["summary"],
+                "prompt": "Review this revision using its entry, steps and expected result."})
+            reasons = readiness(state, state["items"][payload["event_id"]])
         if reasons:
             task["blocker"] = {"reason": reasons[0], "owner": task["owner_agent_id"], "category": "evidence"}
     if task.get("worker_run"):
@@ -549,6 +563,10 @@ def transition(original, op):
                     t["owner_agent_id"] != op["owner_agent_id"] or t["phase"] == "completed"), "shared owner/branch")
             require(not set(t["resources"]) & set(resources), "shared resources")
         task = task_base(op["owner_agent_id"], str(root), op["branch"], resources)
+        task['task_kind']=op.get('task_kind','code')
+        require(task['task_kind']!='read_only' or op.get('acceptance_type'),'read-only acceptance_type must be explicit')
+        task['acceptance_type']=op.get('acceptance_type','user_required')
+        definition(task)
         task.update(report_path=op.get("report_path"), report_task_id=task_id)
         task["progress"] = {"title": op.get("title", task_id), "business_task_id": task_id,
                             "role": "implementation", "facts": [], "next_step": op.get("next_step")}
@@ -557,7 +575,7 @@ def transition(original, op):
             require(op.get("scope") and op.get("acceptance") and op.get("user_reference"),
                     "confirmed scope/acceptance/start reference required")
             ensure_capacity(state, task_id)
-            task.update(requirements={k: op[k] for k in ("scope", "acceptance", "user_reference")},
+            task.update(requirements=confirmed(task,op),
                         start_reference=op["user_reference"], phase="developing", implementation="running")
             task["worker_run"] = run_record(task, "implementation", op["user_reference"])
             for right in op.get("authorized_rights", []):
@@ -571,7 +589,7 @@ def transition(original, op):
     elif name == "confirm":
         require(task and task["phase"] in ("discussion", "backlog"), "already started")
         require(op.get("scope") and op.get("acceptance") and op.get("user_reference"), "requirements required")
-        task.update(requirements={k: op[k] for k in ("scope", "acceptance", "user_reference")}, phase="backlog")
+        task.update(requirements=confirmed(task,op), phase="backlog")
     elif name == "start":
         require(task and task["phase"] in ("backlog", "awaiting_integration") and task["requirements"] and op.get("user_reference"),
                 "confirmed scope/start instruction required")
@@ -648,9 +666,12 @@ def transition(original, op):
                 "resolve this task's active acceptance with close")
         artifact(op["evidence"])
         report_for(state, task_id)  # Presentation adaptation does not waive source/test/quality checks.
+        if definition(task)[0]=='read_only':
+            require(definition(task)[1]=='user_required' and op.get('acceptance_type')=='user_required', 'read-only acceptance type mismatch')
         task.update(user_acceptance="accepted", phase="awaiting_integration", blocker=None,
                     acceptance_record={"evidence": op["evidence"], "user_reference": op["user_reference"],
                                        "delivery_revision": task["delivery_revision"], "report": op["report"]})
+        if definition(task)[0]=='read_only':task['acceptance_record'].update(accepted_by=op['actor_id'],acceptance_type='user_required')
         for item in state["items"].values():
             if (item.get("task_id") == task_id and item["kind"] == "acceptance" and item["status"] == "queued" and
                     item["delivery_revision"] == task["delivery_revision"]):
@@ -780,6 +801,11 @@ def transition(original, op):
                 require(item["delivery_revision"] == t["delivery_revision"], "obsolete active delivery")
                 if op["outcome"] == "accepted":
                     require(not readiness(state, item), "evidence changed; cannot accept")
+                    if definition(t)[0]=='read_only':
+                        require(definition(t)[1]=='user_required' and op.get('user_reference') and op.get('evidence'),'actual user acceptance evidence required')
+                        artifact(op['evidence'])
+                        t['acceptance_record']=dict(evidence=op['evidence'],user_reference=op['user_reference'],accepted_by=op['actor_id'],
+                            acceptance_type='user_required',delivery_revision=t['delivery_revision'],report=t['delivery'])
                     t.update(user_acceptance="accepted", phase="awaiting_integration", blocker=None)
                 else:
                     t.update(user_acceptance=op["outcome"], phase="developing", implementation="running",

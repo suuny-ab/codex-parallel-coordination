@@ -73,6 +73,11 @@ def task_row(state, task_id, members, observed):
                 facts.append("最近交付的实现与自测已完成")
         except ERRORS:
             issues.append("最近交付的呈现或证据待核对")
+    if root.get('task_kind')=='read_only' and root['phase']=='completed':
+        try:
+            from task_completion import verified
+            verified(state,task_id)
+        except ERRORS:issues.append('只读成果完成核验依据已变化')
     if root["user_acceptance"] == "accepted":
         facts.append("当前修订的功能验收已通过")
     tasks = [(key, state["tasks"][key]) for key in members]
@@ -100,8 +105,14 @@ def task_row(state, task_id, members, observed):
         stage = "等待外部资料" if external else "技术受阻，已安排后续核查" if followup.get("status") == "assigned_technical" else "受阻，后续责任待核对"
         next_step = "收到资料后交原执行者核对" if external else "由技术执行者完成核查并回报结果"
     elif root["phase"] == "completed":
-        category, stage, next_step = "completed", "已合入并核对", "部署按独立授权另行安排"
-        facts.append("开发交付流程已核对完成")
+        if root.get('task_kind')=='read_only':
+            category, stage, next_step = 'completed','成果已核验完成','按登记归属核对资源回收'
+            facts.append('本修订成果已由交付者核验')
+        else:
+            category, stage, next_step = "completed", "已合入并核对", "部署按独立授权另行安排"
+            facts.append("开发交付流程已核对完成")
+    elif root['phase']=='awaiting_delivery_review':
+        category,stage,next_step='quality_review','成果待交付核验','由授权交付者核验当前修订成果'
     elif root["phase"] in ("awaiting_integration", "integrating"):
         category = "in_progress" if root["phase"] == "integrating" else "awaiting_integration"
         stage = "集成验证中" if category == "in_progress" else "已验收，待整合"

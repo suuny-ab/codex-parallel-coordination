@@ -11,6 +11,14 @@ import test_core_runtime as core_tests
 from evidence import load, ref, write_atomic
 
 
+def fixture_filesystem(path):
+    """Only owned fixture I/O uses this alias; registered product paths stay ordinary."""
+    value=str(path)
+    if os.name=='nt' and not value.startswith('\\\\?\\'):
+        return Path('\\\\?\\UNC\\'+value[2:] if value.startswith('\\\\') else '\\\\?\\'+value)
+    return path
+
+
 class CleanupTests(core_tests.CoreFixture):
     def close_fixture(self,merged=True,close_agent=True):
         proof=core_tests.CoreRuntimeTests.close_fixture(self,merged)
@@ -21,20 +29,23 @@ class CleanupTests(core_tests.CoreFixture):
         return proof
 
     def managed(self,identity,kind='environment',**extra):
-        root=Path(self.runtime._load()['runtime']['cleanup_root']);root.mkdir(parents=True,exist_ok=True)
+        root=Path(self.runtime._load()['runtime']['cleanup_root']);fixture_filesystem(root).mkdir(parents=True,exist_ok=True)
         path=root/identity
+        disk=fixture_filesystem(path)
         if kind=='database':
-            with closing(sqlite3.connect(path)) as db:
+            with closing(sqlite3.connect(disk)) as db:
                 db.execute('CREATE TABLE fixture(id INTEGER)');db.commit()
-        elif kind!='agent':path.mkdir();(path/'fixture.txt').write_text('synthetic',encoding='utf-8')
+        elif kind!='agent':disk.mkdir();(disk/'fixture.txt').write_text('synthetic',encoding='utf-8')
         spec=dict(id=identity,kind=kind,path=str(path),**extra)
         if kind=='agent':spec.update(executor_id='worker-A',generation=1)
         self.runtime.register_resource('A',spec,self.file(identity+'-creation-proof'),self.actor)
-        return path
+        self.assertEqual(self.runtime._load()['runtime']['resources'][identity]['path'],str(path.resolve()))
+        return disk
 
     def remove(self,resource):
         path=Path(resource['path']).resolve();root=Path(self.runtime._load()['runtime']['cleanup_root']).resolve()
         self.assertNotEqual(path,root);self.assertTrue(path.is_relative_to(root))
+        path=fixture_filesystem(path)
         if path.is_dir():shutil.rmtree(path)
         elif path.exists():path.unlink()
         return dict(status='cleaned',evidence=self.file(resource['id']+'-removed.txt','Scoped temporary removal confirmed'))
