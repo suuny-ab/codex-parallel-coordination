@@ -127,8 +127,12 @@ def receipt_context(state, p):
     from delivery import receipt_scope
     receipt_scope(state, p)
     t = state["tasks"][p["task_id"]]
-    require(p["project_id"] == state["project"]["id"] and p["channel"] in ("native_agent", "app_thread") and
+    require(not t.get('cli_dispatch') or p['channel'] == 'codex_exec', 'CLI author cannot be relabelled as native/App origin')
+    require(p["project_id"] == state["project"]["id"] and p["channel"] in ("native_agent", "app_thread", "codex_exec") and
             p["owner_agent_id"] == t["owner_agent_id"], "native receipt identity mismatch")
+    if p['channel'] == 'codex_exec':
+        from real_use_closeout import cli_origin
+        cli_origin(state, p)
     if p.get('origin_mode') == 'observed_terminal':
         from demand_routing import observed_receipt_origin
         observed_receipt_origin(state, p)
@@ -438,9 +442,10 @@ def summary(state):
 def reset_delivery(task):
     task["history"].append(copy.deepcopy({k: task.get(k) for k in
         ("delivery_revision", "phase", "delivery", "implementation", "self_test", "quality_review",
-         "user_acceptance", "integration", "review", "mr", "merge", "blocker", "blocker_followup", "worker_run", "acceptance_record", "delivery_check", "delivery_check_revision")}))
+         "user_acceptance", "integration", "review", "mr", "merge", "blocker", "blocker_followup", "worker_run", "acceptance_record", "delivery_check", "delivery_check_revision", "independent_quality", "technical_acceptance")}))
     task.update(user_acceptance="pending", integration={"status": "pending"}, review=None, merge=None,
-                blocker=None, blocker_followup=None, acceptance_record=None, delivery_check=None, delivery_check_revision=None)
+                blocker=None, blocker_followup=None, acceptance_record=None, delivery_check=None, delivery_check_revision=None,
+                independent_quality=None, technical_acceptance=None)
 
 
 def ensure_capacity(state, task_id):
@@ -526,7 +531,7 @@ def consume(state, payload):
         # This candidate transaction has consumed the verified origin. Bind it before
         # readiness checks the new delivery; the outer transition saves atomically.
         state["receipts"][payload["event_id"]]["status"] = "processed"
-        if definition(task)==('read_only','delivery_verified'):
+        if definition(task)[1]=='delivery_verified':
             task['phase']='awaiting_delivery_review'
             try:report_for(state,task_id);reasons=[]
             except ERRORS as error:reasons=[str(error)]
@@ -576,6 +581,7 @@ def transition(original, op):
         task['task_kind']=op.get('task_kind','code')
         require(task['task_kind']!='read_only' or op.get('acceptance_type'),'read-only acceptance_type must be explicit')
         task['acceptance_type']=op.get('acceptance_type','user_required')
+        task['acceptance_policy_explicit']='acceptance_type' in op
         definition(task)
         task.update(report_path=op.get("report_path"), report_task_id=task_id)
         task["progress"] = {"title": op.get("title", task_id), "business_task_id": task_id,

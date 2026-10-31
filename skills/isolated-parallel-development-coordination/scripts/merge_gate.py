@@ -10,7 +10,9 @@ def integration_result(state, task_id, report_ref):
     from task_completion import definition
     require(definition(task)[0]=='code','read-only tasks do not use code integration')
     report, mr = report_for(state, task_id), task["mr"]
-    require(mr and task["user_acceptance"] == "accepted", "acceptance/MR missing")
+    from real_use_closeout import code_acceptance
+    code_acceptance(state, task_id)
+    require(mr, "acceptance/MR missing")
     require(result["task_id"] == task_id and result["project_id"] == state["project"]["id"] and
             result["delivery_revision"] == task["delivery_revision"], "integration identity mismatch")
     require(result["source_digest"] == report["source"]["digest"] and result["head_sha"] == mr["head_sha"]
@@ -39,7 +41,8 @@ def gate(state, task_id, target_override=None, actor_id=None):
     for right in ("commit", "push", "mr", "merge"):
         require(task["authorization"][right]["allowed"] and task["authorization"][right]["user_reference"],
                 "not authorized: " + right)
-    require(task["user_acceptance"] == "accepted", "functional acceptance missing")
+    from real_use_closeout import code_acceptance
+    code_acceptance(state, task_id)
     report, mr = report_for(state, task_id), task["mr"]
     require(mr and mr["provider"] == state["project"].get('provider','gitlab') and mr["target_branch"] == state["project"]["main_branch"]
             and mr["source_branch"] == task["branch"], "MR identity mismatch")
@@ -94,7 +97,9 @@ def merge_transition(state, op):
             task.update(integration={"status": "pending"}, review=None)
         task["mr"] = copy.deepcopy(mr)
     elif name == "integration-start":
-        require(task and task["phase"] == "awaiting_integration" and task["user_acceptance"] == "accepted", "acceptance required")
+        require(task and task["phase"] == "awaiting_integration", "acceptance required")
+        from real_use_closeout import code_acceptance
+        code_acceptance(state, op['task_id'])
         report_for(state, op["task_id"])
         require(task["mr"], "MR required")
         task.update(phase="integrating", blocker=None)

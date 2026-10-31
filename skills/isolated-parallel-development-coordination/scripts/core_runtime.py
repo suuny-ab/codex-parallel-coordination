@@ -366,7 +366,9 @@ class Runtime:
             merge_authority(state,key,actor_id,for_merge=True)
             from evidence import report_for
             report=report_for(state,key)
-            require(task['phase']=='awaiting_merge' and task['user_acceptance']=='accepted' and
+            from real_use_closeout import code_acceptance
+            code_acceptance(state,key)
+            require(task['phase']=='awaiting_merge' and
                     task['integration']['status']=='passed' and task.get('review'),'accepted, integrated, independently reviewed task required')
             require(all(task['authorization'][r]['allowed'] for r in ('commit','push','mr','merge')),'actual merge authorization required')
             require(proof.get('project_id')==self.project_id and proof.get('based_on_revision')==state['revision'] and
@@ -392,6 +394,10 @@ class Runtime:
     def complete_read_only(self,proof_ref,actor_id):
         from task_completion import finish
         return finish(self,proof_ref,actor_id)
+
+    def real_use(self,command,actor_id):
+        from real_use_closeout import apply
+        return apply(self,command,actor_id)
 
     def bind_development(self,task_id,spec_ref,actor_id,**options):
         from development_lifecycle import bind
@@ -614,7 +620,7 @@ def main():
     sub=p.add_subparsers(dest='command',required=True)
     init=sub.add_parser('init');init.add_argument('--coordinator',required=True);init.add_argument('--worker-capacity',type=int,default=4)
     sub.add_parser('recover');sub.add_parser('capabilities');sub.add_parser('routing-status')
-    for name in ('apply','prepare','cycle','resolve-next','record-main','complete-read-only','routing'):
+    for name in ('apply','prepare','cycle','resolve-next','record-main','complete-read-only','routing','real-use'):
         cmd=sub.add_parser(name);cmd.add_argument('input');cmd.add_argument('--actor',required=True)
     args=p.parse_args();runtime=Runtime(args.state_root,args.project_root)
     if args.command=='init': result=runtime.initialize(args.coordinator,worker_capacity=args.worker_capacity)
@@ -625,7 +631,8 @@ def main():
     elif args.command=='record-main':result=runtime.record_main_inclusion(ref(args.input),args.actor)
     elif args.command=='complete-read-only':result=runtime.complete_read_only(ref(args.input),args.actor)
     else:
-        method={'apply':runtime.apply,'prepare':runtime.prepare,'resolve-next':runtime.resolve_and_next,'routing':runtime.routing}[args.command]
+        method={'apply':runtime.apply,'prepare':runtime.prepare,'resolve-next':runtime.resolve_and_next,'routing':runtime.routing,
+                'real-use':runtime.real_use}[args.command]
         result=method(load(args.input),args.actor)
     print(json.dumps(result,ensure_ascii=False))
     if result.get('status') == 'rejected':

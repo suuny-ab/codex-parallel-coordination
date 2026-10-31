@@ -32,6 +32,8 @@ python -B tools/profile.py uninstall --profile C:/explicit-isolated-profile
 
 新开发任务登记为 `task_kind=code`；旧记录未声明时按代码任务保守处理。历史 read_only 任务保留 `acceptance_type=delivery_verified|user_required`，由 canonical 完成入口核验当前修订、确认依据、成果与源快照，不伪造 MR/CI。`prepare` 不再创建只读开发者。不能事后改任务类型、冒认旧 owner 或直接改完成状态来绕过门禁。
 
+纯技术代码任务也可明确声明 `acceptance_type=delivery_verified`。真实任务衔接入口可承接原批准、CLI 来源、不可变报告后的独审、技术验收及实际 Git 合入；人工验收与合并授权分别保存。历史默认编码只按显式原指令核实，不重写确认过的 scope。详见[真实任务事实承接](skills/isolated-parallel-development-coordination/references/real-use-closeout.md)。
+
 可复跑的本地检查：
 
 ```powershell
