@@ -96,7 +96,7 @@ class Combination(core_tests.CoreFixture):
         self.assertEqual(admission, self.bridge.admit(source))
         adapter, calls = self.adapter({"send_input": {"submission_id": "fixture-submit"},
                                        "wait_agent": {"status": {"native-A": "running"}}})
-        result = self.runtime.launch("A", adapter, attempt_id="launch-1", admission=admission["admission"],
+        result = self.launch_fixture("A", adapter, attempt_id="launch-1", admission=admission["admission"],
                                      authorized=True, message="synthetic implementation", executor_id="worker-A")
         self.assertEqual(result["status"], "running")
         queued = dict(spec, request_id="queued-request", project_id="other", task_id="B",

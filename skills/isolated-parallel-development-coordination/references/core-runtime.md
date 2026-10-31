@@ -18,6 +18,8 @@ state-root 是安装 profile 固定的一项配置，不接受工作消息临时
 
 SPEC 包含 task_id、worktree 绝对路径、branch、scope、acceptance、user_reference，可给已知 owner_agent_id；未实际取得的执行者留 null，不伪造 native ID。prepare 仅登记并排队。直接 apply(dispatch/start/redispatch/rework/integration-start) 被公开入口拒绝，实际执行走 launch。开发者不写账本/授予权限/独审自己；原主会话解决人事项并授予范围权限，交付者处理技术收件和审核。
 
+新代码派发还须通过 [需求收口与路由](demand-routing.md)：`routing` 保存 spec 自核对、用户拆合/派发摘要审批及唯一指令归属，`launch(..., route_id=...)` 在资源准入之外重新核验这些依据。`routing_status` 只读同一账本及 canonical 任务事实。`prepare` 拒绝新 read_only 开发者，普通查询/分析由主会话处理，已有只读记录继续原完成协议。外部实际 spawn 可由批准的主/集成调用 `bind_observed_dispatch` 登记真实派发与当前运行观察，不补造准入或重复调用宿主。
+
 cycle 使用原 coordination-closeout/1 观察：先收件/drain，再验终态、当前报告、blocked 下一责任者、来源/收件者和保护依据；结果 revision 与已保存 ledger/summary 相同。fixture_only 不代表真实宿主收件完整。resolve_and_next 在一个写锁内关闭当前事项并激活下一合格事项，返回下一项、最终 revision/summary；delivered_to_user=false，必须由当前主会话实际呈现后再 wait。不会打断已有原子事项，不把外部资料协助变成业务语义授权。close 后尚未新对账的精确进度不得伪报。
 
 ## Python 宿主接口
@@ -42,13 +44,13 @@ bind_executor(executor_id, routes, main_actor, authority_ref) 仅绑定真实已
 
 首次登记即校验所有 route 的非空字符串 host_id/target_id，不以注册表已有项目作为检查前提。launch 每次新复用动作前重读 hash 绑定的 observation 与 authority；缺失、变更、identity/generation 或缓存事实不一致立即拒绝，不发送消息、不记 running，也不保存新的尝试。
 
-late-bind 同样遵守唯一任务责任：执行者仍拥有任何其它 phase!=completed 的任务时拒绝新任务派工，即使旧任务 backlog/待验收或该 agent 当前 idle。同任务技术返工、旧任务已合 main 并核对完成后的明确新派工不被此检查误挡。
+late-bind 同样遵守唯一任务责任：执行者拥有其它需求时拒绝新任务派工，即使旧任务已完成或该 agent 当前 idle。新需求创建专属开发者；同一未结束需求的技术返工继续原作者、工作树和 PR。
 
 HostAdapter.final_receipt(state, task_id, payload, sender_target, recipient, proof_ref) 只接受宿主侧真实来源。Runtime.receive 校验终态报告的项目/责任人/修订/来源/收件者；不同通道同 event/报告仅在再次核证后去重，canonical 原包不重写，冲突拒绝。缺报告走原未核证缓冲，同修订恢复；只读观察不占 canonical。
 
 ## 资源准入与执行
 
-launch(task_id, adapter, attempt_id=..., admission=REF, authorized=True, message=..., spawn=False, executor_id=...) 是一次有限调用。admission 是受信 RESOURCE bridge 生成的 granted 证明，包含 project_id、task_id、attempt_id、request_id、permit_id、launch_identity；后者是既有 executor_id 或尚待取得身份的 spawn:<attempt_id> 请求标识，绝不是伪造 agent ID。CORE 只留引用和关联键，RESOURCE 是许可权威。回调只能联系该任务授权执行者，不覆盖模型、推理或速度，不关闭运行者。重用既有完成执行者前核无 pending_work/active_children；同一原任务责任人不得被静默替换。
+launch(task_id, adapter, attempt_id=..., admission=REF, authorized=True, message=..., spawn=False, executor_id=..., route_id=...) 是一次有限调用。admission 是受信 RESOURCE bridge 生成的 granted 证明，包含 project_id、task_id、attempt_id、request_id、permit_id、launch_identity；后者是既有 executor_id 或尚待取得身份的 spawn:<attempt_id> 请求标识，绝不是伪造 agent ID。CORE 只留引用和关联键，RESOURCE 是许可权威。回调只能联系该任务授权执行者，不覆盖模型、推理或速度，不关闭运行者。同需求返工前核无 pending_work/active_children；原任务责任人不得被静默替换，新需求不接用其它需求的开发者。
 
 外部副作用前先写 intent。满额/缺能力保留 queued 并立即返回 public_progress；发送接受还须一次真实运行观察，不能当已开始/完成。unknown 或 accepted_unconfirmed 不重发，等待新的实际观察；调用方不能用新 attempt 掩盖未核清的旧副作用。
 

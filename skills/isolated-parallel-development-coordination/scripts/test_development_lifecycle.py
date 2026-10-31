@@ -56,12 +56,20 @@ class DevelopmentLifecycleTests(core_tests.CoreFixture):
         with self.assertRaises(ValueError): self.runtime.bind_development('A', self.file('spec'), self.actor)
         self.assertIsNone(self.runtime._load()['tasks']['A']['owner_agent_id'])
 
-    def test_B02_read_only_task_cannot_be_bound_as_developer(self):
+    def test_B02_new_read_only_prepare_refused_and_historical_task_cannot_bind_developer(self):
         work = self.root/'read-only'; work.mkdir()
         (work/'input.txt').write_text('frozen fixture input',encoding='utf-8')
-        self.runtime.prepare(dict(task_id='R', owner_agent_id='worker-A', worktree=str(work), branch='read-only',
+        spec=dict(task_id='R', owner_agent_id='worker-A', worktree=str(work), branch='read-only',
             task_kind='read_only', acceptance_type='delivery_verified', scope='read sources', acceptance=['report'],
-            user_reference='fixture scope'), self.actor)
+            user_reference='historical fixture scope')
+        before=self.runtime.path.read_bytes()
+        with self.assertRaisesRegex(ValueError,'stay with main'):
+            self.runtime.prepare(spec,self.actor)
+        self.assertEqual(self.runtime.path.read_bytes(),before)
+        # Explicit historical ledger fixture only: never dispatch a new read-only developer.
+        self.runtime.apply(dict(spec,op='register'),self.actor)
+        self.runtime.apply(dict(op='confirm',task_id='R',**{k:spec[k] for k in ('scope','acceptance','user_reference')}),self.actor)
+        self.runtime.apply(dict(op='queue',task_id='R',reason='Historical fixture',user_reference=spec['user_reference']),self.actor)
         self.bind()
         with self.assertRaisesRegex(ValueError, 'development task'):
             self.runtime.bind_development('R', self.file('spec'), self.actor)

@@ -23,6 +23,9 @@ class CoreFixture(LedgerFixture):
 
     def store(self): write_atomic(self.runtime.path,self.state)
     def reload(self): self.state=self.runtime._load()
+    def launch_fixture(self, key, adapter, **options):
+        from routing_fixture import launch
+        return launch(self, key, adapter, **options)
     def prepare(self,key='A',owner=None):
         work=self.root/key;work.mkdir(exist_ok=True)
         self.runtime.prepare(dict(task_id=key,owner_agent_id=owner,worktree=str(work),branch='task/'+key,
@@ -99,7 +102,7 @@ class CoreRuntimeTests(CoreFixture):
         trajectory=load(Path(__file__).resolve().parents[1]/'fixtures/redacted-trajectories.json')
         for number in range(len(trajectory['spawn_failures'])):
             attempt='capacity-'+str(number)
-            result=self.runtime.launch('A',adapter,attempt_id=attempt,admission=self.permit(attempt=attempt),
+            result=self.launch_fixture('A',adapter,attempt_id=attempt,admission=self.permit(attempt=attempt),
                 authorized=True,message='same confirmed task',spawn=True)
             self.assertEqual(result['status'],'capacity');self.assertIn('排队',result['public_progress'])
             self.assertEqual(self.runtime._load()['tasks']['A']['worker_run']['status'],'queued')
@@ -109,7 +112,7 @@ class CoreRuntimeTests(CoreFixture):
         self.assertEqual([tool for tool,_ in calls],['spawn_agent']*3)
         self.bind()
         adapter,calls=self.adapter({'send_input':{'submission_id':'test-submit'},'wait_agent':{'status':{'native-A':'running'}}})
-        result=self.runtime.launch('A',adapter,attempt_id='reuse',admission=self.permit(attempt='reuse',executor='worker-A'),
+        result=self.launch_fixture('A',adapter,attempt_id='reuse',admission=self.permit(attempt='reuse',executor='worker-A'),
             authorized=True,message='continue original scope',executor_id='worker-A')
         self.assertEqual(result['status'],'running')
         self.assertEqual(self.runtime._load()['tasks']['A']['owner_agent_id'],'worker-A')
@@ -118,21 +121,21 @@ class CoreRuntimeTests(CoreFixture):
     def test_unavailable_and_unknown_attempt_do_not_start_or_repeat(self):
         self.prepare()
         adapter,calls=self.adapter({},tools=[])
-        result=self.runtime.launch('A',adapter,attempt_id='unsupported',admission=self.permit(attempt='unsupported'),
+        result=self.launch_fixture('A',adapter,attempt_id='unsupported',admission=self.permit(attempt='unsupported'),
             authorized=True,message='scope',spawn=True)
         self.assertEqual(result['status'],'unsupported');self.assertEqual(calls,[])
         def timeout(_):raise TimeoutError('unknown response')
         adapter,calls=self.adapter({'spawn_agent':timeout})
-        result=self.runtime.launch('A',adapter,attempt_id='unknown',admission=self.permit(attempt='unknown'),
+        result=self.launch_fixture('A',adapter,attempt_id='unknown',admission=self.permit(attempt='unknown'),
             authorized=True,message='scope',spawn=True)
         self.assertEqual(result['status'],'unknown')
-        self.runtime.launch('A',adapter,attempt_id='unknown',admission=self.permit(attempt='unknown'),
+        self.launch_fixture('A',adapter,attempt_id='unknown',admission=self.permit(attempt='unknown'),
             authorized=True,message='scope',spawn=True)
         self.assertEqual(len(calls),1)
         with self.assertRaises(ValueError):self.runtime.release_receipt('unknown',self.actor)
         self.assertEqual(self.runtime._load()['tasks']['A']['worker_run']['status'],'queued')
         with self.assertRaisesRegex(ValueError,'uncertain'):
-            self.runtime.launch('A',adapter,attempt_id='new-id-not-a-retry',admission=self.permit(attempt='new-id-not-a-retry'),
+            self.launch_fixture('A',adapter,attempt_id='new-id-not-a-retry',admission=self.permit(attempt='new-id-not-a-retry'),
                 authorized=True,message='scope',spawn=True)
         facts=self.json('no-execution.json',dict(project_id=self.runtime.project_id,task_id='A',operation_id='unknown',
             status='not_started',evidence=[self.file('host-no-start.txt')]))
@@ -143,7 +146,7 @@ class CoreRuntimeTests(CoreFixture):
     def test_send_accepted_is_not_running_or_final(self):
         self.prepare(owner='worker-A');self.bind()
         adapter,_=self.adapter({'send_input':{'submission_id':'one'},'wait_agent':{'status':{'native-A':{'completed':'not task evidence'}}}})
-        result=self.runtime.launch('A',adapter,attempt_id='accepted',admission=self.permit(attempt='accepted'),
+        result=self.launch_fixture('A',adapter,attempt_id='accepted',admission=self.permit(attempt='accepted'),
             authorized=True,message='scope',executor_id='worker-A')
         self.assertEqual(result['status'],'accepted_unconfirmed')
         state=self.runtime._load();self.assertEqual(state['tasks']['A']['implementation'],'queued')
@@ -154,7 +157,7 @@ class CoreRuntimeTests(CoreFixture):
         # Author and full report are real fixture artifacts, not acceptance from a send.
         self.runtime.apply(dict(op='queue',task_id='A',reason='reuse original author',user_reference='same fixture scope'),self.actor)
         adapter,_=self.adapter({'send_input':{'submission_id':'fast'},'wait_agent':{'status':{'native-A':{'completed':'turn done'}}}})
-        self.runtime.launch('A',adapter,attempt_id='fast',admission=self.permit(attempt='fast'),
+        self.launch_fixture('A',adapter,attempt_id='fast',admission=self.permit(attempt='fast'),
             authorized=True,message='same scope',executor_id='worker-A')
         self.runtime.receive(event,self.actor);self.runtime.apply(dict(op='drain'),self.actor)
         task=self.runtime._load()['tasks']['A']
