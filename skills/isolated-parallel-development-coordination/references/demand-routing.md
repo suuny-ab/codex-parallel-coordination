@@ -48,6 +48,34 @@ result = runtime.bind_observed_dispatch(task_id, proof_ref, actual_caller)
 
 该适配器仅接受 `approved-dispatch-plan/1`：approval=approved、source 为 direct user message in original main conversation、main_conversation 是 canonical 主会话，tasks[].id 含目标，integration_agent 是实际审核者。caller 只可为该主会话或该批准的 integration_agent；observer_id 绑定实际取证者。登记任务的 requirements.user_reference 必须引用同一批准文件路径。
 
-`dispatch_result` 为原始批次 JSON，authority_file 引用同批准文件，dispatch_attempts 中本任务恰好一个 fulfilled/value，含 task_id/worktree/branch/agent_id/spec/checklist。两份 dispatch 时文档的 basename/hash 必须对应 approval.specs；不得拿开发后修改的文档冒充原批准快照。`observation` 保存实际 read_thread 原始 JSON（也支持 MCP content 包装），thread.id 必须对应实际 agent_id，且状态 active/running/inProgress 或当前 turn inProgress。接受/idle/completed 不冒认为 running，拒绝后保留原账本。内容哈希仍不替代受信宿主的真实来源认证。
+`dispatch_result` 为原始批次 JSON，authority_file 引用同批准文件，dispatch_attempts 中本任务恰好一个 fulfilled/value，含 task_id/worktree/branch/agent_id/spec/checklist。两份 dispatch 时文档的 basename/hash 必须对应 approval.specs；不得拿开发后修改的文档冒充原批准快照。`observation` 保存实际 read_thread 原始 JSON（也支持 MCP content 包装），thread.id 必须对应实际 agent_id，R2按最新turn区分当前执行与已结束事实，接受/idle/completed不冒认为running，拒绝后保留原账本。内容哈希仍不替代受信宿主的真实来源认证。
 
-成功仅将已排队、owner=null 的任务与真实身份、运行观察和审核者依据关联。`runtime.observed_dispatches` 记录证明，runtime.operations 不补造准入/launch/close。完全相同证明幂等；改身份、其它任务/控制角色占用、旧 revision/版本、错误 worktree/branch/审批/观察均拒绝。后续真实交付仍经 canonical receive/drain；此入口不给完成、合并、回收或全局安装授权。既有 delivery 委托仍由主会话按独立权限维护。
+成功仅将已排队、owner=null 的任务与真实身份、运行观察和审核者依据关联。`runtime.observed_dispatches` 记录证明，runtime.operations 不补造准入/launch/close。完全相同证明幂等；改身份、其它任务/控制角色占用、旧 revision/版本、错误 worktree/branch/审批/观察均拒绝。后续通过同任务收件入口调用canonical验单与消费；此入口不给完成、合并、回收或全局安装授权。既有 delivery 委托仍由主会话按独立权限维护。
+
+
+### R2：真实终态归属与本任务收件
+
+独审的真实终态回放发现R1只接受running会挡住已交付作者，且active thread加最新completed turn会被OR误判为running。R2使用最新turn的completed/failed/interrupted/cancelled/canceled终态优先；没有终态时须有一致的active/running/inProgress执行观察。只有idle或接受spawn仍不足以证明执行。
+
+终态绑定保存实际执行者、execution_outcome/terminal_turn_id，worker_run进入awaiting_receipt。executor.execution=completed仅表示执行已结束；code task仍是developing、delivery_revision不变、验收/合并不变。失败或中断没有报告时只登记归属，不制造交付或业务取消。running绑定之后也可用真实终态收件，无需重新唤醒或派发。
+
+单有reviewer_id不等于公共receive权限。缺少本任务正式delivery委托时Runtime.receive仍只接受coordinator；既有全量delegate要求真实代码CI job，不能填造job绕过。R2提供独立公开入口，将原批准中的integration_agent用作本任务接收人，仅授予回执入账，不改变coordinator、全局delivery、CI策略或Git/合并权限：
+
+```python
+payload = {
+    'project_id': runtime.project_id, 'task_id': task_id,
+    'owner_agent_id': actual_native_id,
+    'recipient_agent_id': actual_integration_caller,
+    'channel': 'native_agent', 'kind': actual_report_kind,  # completed or blocked
+    'delivery_revision': actual_report_revision,
+    'event_id': f'{task_id}:{actual_report_revision}:{actual_report_kind}',
+    'report': ref(actual_author_report_path),
+}
+result = runtime.receive_observed_delivery(payload, actual_terminal_capture_ref, actual_integration_caller)
+```
+
+入口重验原批准、同任务/执行者/接收者、executor generation及终态原件。最新真实final的agentMessage（phase=final/final_answer）必须明确引用该报告绝对路径；failed/interrupted等不能重标成功交付。报告继续通过canonical身份、修订及报告校验；源码或质量未就绪时沿原验收blocker保留，不能把入账当验收通过。没有真实final/报告就保留awaiting_receipt。已有全局delivery与本任务接收范围冲突时也拒绝，不静默重配。
+
+仅调用既有canonical admit_receipt/consume处理这一个event，不遍历或消费其它任务队列。origin_mode=observed_terminal、批准派发与终态引用保存在canonical receipt，receipt_context在后续去重、验收及取用时重核来源。同回执去重保留原包。成功收件后worker_run=reported，成功报告进入原awaiting_acceptance，失败报告进入原blocked；code task completed仍需原合main门禁。
+
+这是read_thread终态核实后的收件/对账路径，不能报告为native完成事件已自动投递或已转交集成。native事件仍由主会话接收，主/集成据实际事件及对应终态调用本入口；只做观察回放就明确标记observed_terminal。R1原件是当时的终态历史证据，可在副本复现；当前交付应取对应当前报告的真实终态，不能拿过期running记录冒充现在。

@@ -126,6 +126,7 @@ class Runtime:
         from demand_routing import task_version
         state = self._load()
         return dict(revision=state['revision'], intake=deepcopy(state['runtime'].get('intake', {})),
+            observed_dispatches=deepcopy(state['runtime'].get('observed_dispatches', {})),
             tasks={key: {field: deepcopy(task.get(field)) for field in
                 ('phase', 'owner_agent_id', 'worktree', 'branch', 'requirements', 'authorization', 'mr', 'worker_run', 'routing')}
                 for key, task in state['tasks'].items()},
@@ -139,6 +140,17 @@ class Runtime:
             result = bind_observed(state, task_id, proof_ref, actor_id)
             if not result.get('duplicate'):
                 self._save(state, dict(op='bind-observed-dispatch', task_id=task_id, proof=proof_ref))
+            return dict(result, revision=state['revision'])
+
+    def receive_observed_delivery(self, payload, observation_ref, actor_id):
+        """Use approved task-only receipt authority without changing global delivery roles."""
+        from demand_routing import receive_observed
+        with writer_lock(self.path):
+            state = self._load()
+            result = receive_observed(state, payload, observation_ref, actor_id)
+            if not result['duplicate']:
+                self._save(state, dict(op='receive-observed-delivery', task_id=payload['task_id'],
+                    event_id=payload['event_id'], actor_id=actor_id, observation=observation_ref))
             return dict(result, revision=state['revision'])
 
     def bind_executor(self, executor_id, routes, actor_id, authority_ref, *, task_id=None):

@@ -113,3 +113,10 @@ T14—T17、T20是任务B的历史验收编号，详见 生命周期任务 DEV-L
 | 主控/集成后续 | 真实 canonical bind/receive/drain、非作者审查、CI、用户必要验收、合并后 native close/资源回收 | 本轮作者无权替代主控执行；尚未观察的项目保留待核验，不勾为通过 |
 
 本地完整 CORE、组合/打包、固定资源源码回归、skill 校验及候选包检查的真实命令、数量、失败修复和跳过项见交付目录报告。报告独立列出外部历史资料缺失与宿主未验项，不能把“单测通过”写为本验收清单全部完成。未观察到可比效率数据，不声称减少等待或提高吞吐。
+
+
+## 6. R2独审返修回归
+
+原独审证据integration-review/r1保持原样。新增test_observed_delivery.py覆盖：idle/completed归属；active元数据与最新completed turn的优先级；failed/blocked报告；仅本任务接收而不影响其它buffered回执；caller/recipient/owner/报告出处/运行中观察拒绝；幂等及审批撤销；无报告的中断不虚构交付；源码变化保留验收blocker；running绑定后用真实终态收件；后续重核原始provenance；失败不能重标成功。
+
+先在R1实现上保留7项失败复现（1失败、6错误），再完成修复及11项受影响回归。最终命令、数量、源码绑定及真实终态原件在一次性账本副本的回放结果见R2作者报告。副本入账不等于live canonical已入账，observed_terminal不等于native事件已送达；旧源码报告若已过期须保留源码blocker，不能伪改通过。未变RESOURCE旧64项不计为本轮复跑。

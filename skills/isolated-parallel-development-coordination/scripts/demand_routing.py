@@ -101,13 +101,91 @@ def task_version(state, task_id):
         executor={k: owner.get(k) for k in ('id', 'generation', 'routes', 'authority')} if owner else None))
 
 
+def observed_execution(reference, identity):
+    from host_adapter import unwrap
+    raw = unwrap(load_bound(reference))
+    require(raw.get('thread', {}).get('id') == identity, 'observed native thread differs from actual dispatch')
+    turn = raw.get('latestTurn') or raw.get('latest_turn') or next(iter(raw.get('turns', [])), {})
+    status = turn.get('status')
+    if status in ('completed', 'failed', 'interrupted', 'cancelled', 'canceled'):
+        return status, turn  # A terminal latest turn wins over active thread metadata.
+    thread_status = raw['thread'].get('status', {})
+    thread_status = thread_status.get('type') if isinstance(thread_status, dict) else thread_status
+    require(status in (None, 'inProgress', 'in_progress') and thread_status in
+        ('active', 'running', 'inProgress', 'in_progress'), 'explicit current execution or terminal turn required')
+    return 'running', turn
+
+
+def observed_receipt_origin(state, payload):
+    """Recheck the actual owner, approval and terminal source on every use."""
+    task_id = payload['task_id']
+    binding = state['runtime']['observed_dispatches'][task_id]
+    proof = load_bound(binding['proof'])
+    approval = load_bound(proof['approval'])
+    require(payload.get('origin_dispatch') == binding['proof'] and approval.get('approval') == 'approved' and
+        approval.get('schema') == 'approved-dispatch-plan/1' and approval.get('main_conversation') == state['coordinator_id'] and
+        any(t.get('id') == task_id for t in approval.get('tasks', [])), 'observed receipt approval or dispatch changed')
+    require(payload['owner_agent_id'] == binding['executor_id'] == state['tasks'][task_id]['owner_agent_id'] and
+        payload['recipient_agent_id'] == binding['reviewer_id'] == approval['integration_agent'] and
+        payload['channel'] == 'native_agent', 'observed receipt owner or task-scoped receiver differs')
+    require(state['runtime']['executors'][binding['executor_id']]['generation'] == binding.get('generation', 1),
+        'observed receipt executor generation changed')
+    for field in ('dispatch_result', 'spec_at_dispatch', 'checklist_at_dispatch'):
+        artifact(proof[field])
+    outcome, turn = observed_execution(payload['origin_observation'], binding['executor_id'])
+    require(outcome != 'running' and payload['kind'] in ('completed', 'blocked') and
+        (outcome == 'completed' or payload['kind'] == 'blocked'), 'terminal report kind differs from actual execution outcome')
+    finals = [item.get('text', '') for item in turn.get('items', []) if item.get('type') == 'agentMessage' and
+        item.get('phase') in ('final', 'final_answer')]
+    target = payload['report']['path'].replace('\\', '/').casefold()
+    require(any(target in message.replace('\\', '/').casefold() for message in finals),
+        'latest actual final does not reference this author report')
+
+
+def receive_observed(state, payload, observation_ref, actor):
+    """Receipt-only task authority; reuse canonical admission/consume, never global drain."""
+    from coordination import admit_receipt, consume, receipt_context, receipt_report
+    from evidence import ERRORS
+    packet = deepcopy(payload)
+    binding = state['runtime']['observed_dispatches'][packet['task_id']]
+    require(actor == binding['reviewer_id'] == packet.get('recipient_agent_id'), 'actual task-scoped integration receiver required')
+    packet.update(origin_mode='observed_terminal', origin_dispatch=binding['proof'], origin_observation=observation_ref)
+    receipt_context(state, packet)  # Includes current global scope if one exists, plus bound source checks.
+    task = state['tasks'][packet['task_id']]
+    require(packet['delivery_revision'] >= task['worker_run']['expected_delivery_revision'], 'receipt predates current task execution')
+    previous = state['receipts'].get(packet['event_id'])
+    if previous:
+        require({k: v for k, v in previous['payload'].items() if k != 'origin_observation'} ==
+            {k: v for k, v in packet.items() if k != 'origin_observation'}, 'conflicting duplicate observed receipt')
+        receipt_context(state, previous['payload']); receipt_report(state, previous['payload'])
+        if previous['status'] in ('processed', 'stale'):
+            return dict(receipt_status=previous['status'], duplicate=True, origin_mode='observed_terminal')
+        packet = previous['payload']  # Retain the original canonical bytes and provenance.
+    outcome, turn = observed_execution(observation_ref, binding['executor_id'])
+    binding.update(latest_observation=observation_ref, execution_outcome=outcome, terminal_turn_id=turn.get('id'))
+    state['runtime']['executors'][binding['executor_id']]['execution'] = 'completed'
+    admitted = admit_receipt(state, packet)
+    if admitted == 'quarantined':
+        return dict(receipt_status='unverified', duplicate=False, origin_mode='observed_terminal')
+    candidate = deepcopy(state)
+    try:
+        status, reason = consume(candidate, packet), None
+        state.clear(); state.update(candidate)
+    except ERRORS as error:
+        status, reason = 'held', str(error)
+    receipt = state['receipts'][packet['event_id']]
+    if (receipt['status'], receipt.get('reason')) != (status, reason):
+        receipt['history'].append(dict(status=status, reason=reason))
+    receipt.update(status=status, reason=reason)
+    return dict(receipt_status=status, reason=reason, duplicate=False, origin_mode='observed_terminal')
+
+
 def bind_observed(state, task_id, proof_ref, actor):
     """Bind an already-spawned native developer, never simulate an admitted launch.
 
 The authenticated caller supplies original host artifacts. This deliberately
 limited bootstrap adapter accepts approved-dispatch-plan/1, not worker reports.
 """
-    from host_adapter import unwrap
     proof = load_bound(proof_ref)
     approval = load_bound(proof['approval'])
     require(approval.get('schema') == 'approved-dispatch-plan/1' and approval.get('approval') == 'approved' and
@@ -153,22 +231,19 @@ limited bootstrap adapter accepts approved-dispatch-plan/1, not worker reports.
         require(any(x.get('sha256') == proof[field]['sha256'] and
             Path(x['path']).name == Path(proof[field]['path']).name for x in approval.get('specs', [])),
             'dispatch spec/checklist not bound to approved document')
-    raw = unwrap(load_bound(proof['observation']))
-    require(raw.get('thread', {}).get('id') == identity, 'observed native thread differs from actual dispatch')
-    turns = raw.get('turns', [])
-    status = raw['thread'].get('status', {})
-    status = status.get('type') if isinstance(status, dict) else status
-    running = status in ('active', 'running', 'inProgress', 'in_progress') or any(
-        t.get('status') in ('inProgress', 'in_progress') for t in turns[:1])
-    require(running, 'current running observation required; an accepted spawn is insufficient')
+    outcome, turn = observed_execution(proof['observation'], identity)
+    running = outcome == 'running'
     route = dict(host_id=proof['host_id'], target_id=identity)
     require(text(route['host_id']) and not any(e.get('routes', {}).get('native_agent') == route
         for e in state['runtime']['executors'].values()), 'native route missing or already owned')
     state['runtime']['executors'][identity] = dict(id=identity, routes={'native_agent': route}, generation=1,
-        lease='open', execution='running', active_children=None, pending_work=None, authority=proof['approval'], observation=None)
-    task.update(owner_agent_id=identity, phase='developing', implementation='running')
-    task['worker_run'].update(owner_agent_id=identity, status='running', reason='Verified externally observed dispatch; no admission reconstructed')
-    record = dict(executor_id=identity, proof=proof_ref, observer_id=actor, reviewer_id=reviewer,
+        lease='open', execution='running' if running else 'completed', active_children=None, pending_work=None,
+        authority=proof['approval'], observation=None)
+    task.update(owner_agent_id=identity, phase='developing', implementation='running' if running else 'pending')
+    task['worker_run'].update(owner_agent_id=identity, status='running' if running else 'awaiting_receipt',
+        reason='Verified externally observed execution; terminal attribution awaits canonical author receipt')
+    record = dict(executor_id=identity, generation=1, proof=proof_ref, observer_id=actor, reviewer_id=reviewer,
+        receiver_id=reviewer, receipt_scope=[task_id], execution_outcome=outcome, terminal_turn_id=turn.get('id'),
         admission_reconstructed=False, host_actions=[], observation=proof['observation'])
     state['runtime'].setdefault('observed_dispatches', {})[task_id] = record
     return deepcopy(record)

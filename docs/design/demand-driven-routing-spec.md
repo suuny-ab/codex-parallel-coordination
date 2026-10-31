@@ -144,3 +144,6 @@ flowchart TD
 真实开发反馈补充了 `bind_observed_dispatch`：原主控已经实际 spawn，但 pending task 尚未关联 owner 时，受信主/集成以原批准文件、原始派发结果、两份批准文档快照、当前运行观察和 ledger/target 版本登记事实；不重复 spawn/send，不补造资源准入或历史 launch。该入口的参数及严格边界见 [需求路由说明](../../skills/isolated-parallel-development-coordination/references/demand-routing.md)。
 
 作者本地专项测试涵盖配套清单全部 25 个本任务编号、历史误派回放及补充的审批/版本/身份/PR/观察失败边界。模拟宿主调用明确为夹具；真实工作树、用户原批准文档及本任务 Git/PR 交付分别留证。真实 canonical 登记、原生完成事件送达、非作者审核、合并及之后回收须由主控/集成按实际权限核验，不能从本地测试或文件报告推定已发生。最终源码、测试数、跳过项和 PR URL 以工作树外本任务交付报告为准。
+
+
+R2独审返修：已交付作者的真实idle/completed终态可登记归属；最新终态优先于thread active元数据，不伪记running。终态只进入awaiting_receipt，不结束code任务。新增Runtime.receive_observed_delivery，按原批准的同任务integration收件权限核实真实final引用的作者报告，调用canonical验单和单条消费；不变更coordinator/全局delivery、不填造CI job、不全局drain，也不替代源码校验、验收或合main门禁。原R1失败和源码证据保留，补充终态/受限收件回归见验收清单。
