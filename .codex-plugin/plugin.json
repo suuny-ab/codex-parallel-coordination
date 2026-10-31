@@ -1,0 +1,6 @@
+{
+  "name": "codex-parallel-coordination",
+  "version": "0.1.0",
+  "description": "Durable project coordination and admission for explicitly managed executors.",
+  "skills": "./skills/"
+}

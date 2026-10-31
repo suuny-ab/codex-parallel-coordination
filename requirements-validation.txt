@@ -1,0 +1,2 @@
+# Optional development validation only; the plugin runtime uses the standard library.
+PyYAML==6.0.3

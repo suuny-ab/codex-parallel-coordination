@@ -1,0 +1,16 @@
+{
+  "schema": "coordination-capabilities/1",
+  "version": "0.1.0",
+  "release_status": "local_candidate_unpublished",
+  "minimum_python": "3.12",
+  "managed_process_isolation_platform": "windows",
+  "idle_automatic_wakeup": false,
+  "background_polling": false,
+  "hooks_bundled": false,
+  "automatic_global_installation": false,
+  "actual_Codex_two_project_loading_verified": false,
+  "actual_host_executor_close_resume_verified": false,
+  "native_executor_transport": "requires_authorized_host_adapter",
+  "existing_App_chat_transport": "requires_authorized_host_adapter",
+  "unregistered_process_control": false
+}

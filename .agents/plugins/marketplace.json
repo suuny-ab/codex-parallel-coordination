@@ -1,0 +1,10 @@
+{
+  "name": "codex-parallel-coordination-local",
+  "interface": {"displayName": "Parallel coordination (local candidate)"},
+  "plugins": [{
+    "name": "codex-parallel-coordination",
+    "source": {"source": "local", "path": "./"},
+    "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"},
+    "category": "Productivity"
+  }]
+}

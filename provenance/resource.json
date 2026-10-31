@@ -1,0 +1,74 @@
+{
+  "component": "RESOURCE",
+  "version": "1.1.1",
+  "delivery_revision": 2,
+  "report_sha256": "96c7e7a9660557f4d52b5f7670d79548a0f7b0b9e875a78290635fd80e0ebc11",
+  "manifest_sha256": "36f67ddb6f820e7a50da39eb517c6e6116b80edf667b20bfc8fbd98a6c68ec25",
+  "tree_digest": "75cde0584d18622a3992fdac43a5de6eddfaf9d036dd86bfa3a31de3d0099310",
+  "runtime_modified": false,
+  "previous_unsafe_source_preserved": true,
+  "report_label": "2026-10-31/resource/RESOURCE_IMPLEMENTATION_R2.json",
+  "files": [
+    {
+      "path": "docs/resource/API.md",
+      "sha256": "4eec8e6b0dba4117ab450eed7eff7cd2ec982d258cd53039fa5a4cc54e749b17"
+    },
+    {
+      "path": "docs/resource/CHANGE_R2.md",
+      "sha256": "fe78d35bd51d49e09e1eb393834bd4edb92a87fd65610001d5de0be8c693a435"
+    },
+    {
+      "path": "src/codex_parallel_coordination/resources/__init__.py",
+      "sha256": "4e9089c75bc1478b4a3e705ff8b29a7f7dc1dc22d3eee1ee688dd3fdde475f97"
+    },
+    {
+      "path": "src/codex_parallel_coordination/resources/cleanup.py",
+      "sha256": "25bb1a0497696c74a5ecf577c55657db81bd0247f0b12c2ec859f9952ba42846"
+    },
+    {
+      "path": "src/codex_parallel_coordination/resources/instance_lock.py",
+      "sha256": "21edce34951f547ff735ab452728be8a5324240f30761fcbfddf5967af3eea7d"
+    },
+    {
+      "path": "src/codex_parallel_coordination/resources/resources.py",
+      "sha256": "4941960a11831fe4585b54522526828e4582b820587393ce7169d944a0930baa"
+    },
+    {
+      "path": "src/codex_parallel_coordination/resources/support.py",
+      "sha256": "545f300c2f5063ccac5d9950b765e6b9bbfcd226397b43efff8fea6bbd1227fd"
+    },
+    {
+      "path": "src/codex_parallel_coordination/resources/windows_resources.py",
+      "sha256": "be90a0ac5579b7f6f712a948055c59b9f860e1ab5f22da2738cae5ce45901af1"
+    },
+    {
+      "path": "docs/resource/DESIGN_R1.md",
+      "sha256": "8dc73a4c05111fbbdc79f3673a9963adfcf34e8b21f24b233cf8fbc784c11a64"
+    },
+    {
+      "path": "tests/resource/test_cleanup.py",
+      "sha256": "d5ad5e518f1f7ab7474702255ff80cd59939eb086bd7726d094bbb41a1503355"
+    },
+    {
+      "path": "tests/resource/test_resource_additions.py",
+      "sha256": "930a137f89fecbb74392a957ca8f579db8ec6f3f9e529fa3d76ec93e120c243b"
+    },
+    {
+      "path": "tests/resource/test_resources.py",
+      "sha256": "746f0bf8c9e4ed23b5f98f18da6ed43a7f6060a9a567a00c7b408fb4cfa42ae8"
+    },
+    {
+      "path": "tests/resource/test_scope_reconcile.py",
+      "sha256": "d12dac122ed43acc0342fb09c8718abe8fb063c0de98ad28dfa9acf756661e72"
+    },
+    {
+      "path": "tests/resource/author_batch_mutex.py",
+      "sha256": "8a7add4112c89343ff0e74c6a27c8a57eda5886b163db2d94a298f0c13902671"
+    },
+    {
+      "path": "tests/resource/author_run_tests.py",
+      "sha256": "8fa9700c41076bfb01283c18783f0e0b937465b943922341d95eacfccafd2bf6"
+    }
+  ],
+  "test_inheritance": "none; final combination requires fresh campaign"
+}

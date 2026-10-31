@@ -1,0 +1,20 @@
+{
+  "scope": "Synthetic minimum state sequences derived from observed coordination failures; no original ledger, customer values, accounts, paths or message text.",
+  "lagging_ledger": {
+    "registered_delivery_revision": 2,
+    "observed_delivery_revision": 3,
+    "observed_execution": "completed",
+    "inbox_first_pass": [],
+    "expected_first_pass": "reconcile_required",
+    "inbox_second_pass": ["task:3:completed"],
+    "expected_second_pass": "consume_same_revision_before_handoff"
+  },
+  "atomic_handoff": ["human_item_active", "technical_external_dependency_reviewed", "human_item_resolved", "next_eligible_item_activated"],
+  "spawn_failures": [
+    {"code": "agent_capacity_exceeded", "expected": "queued_not_running"},
+    {"code": "agent_capacity_exceeded", "expected": "queued_not_running"},
+    {"code": "agent_capacity_exceeded", "expected": "queued_not_running"}
+  ],
+  "continuation": ["registered_executor_observed_completed", "no_pending_work_or_children", "authorized_reuse", "send_accepted", "actual_running_observed"],
+  "lifecycle": ["pre_main_no_cleanup", "main_inclusion_verified", "external_minimum_handoff_verified", "exclusive_resource_scope_checked", "cleanup_attempt", "unknown_keeps_pending", "actual_effect_reconciled", "cleanup_completed"]
+}
