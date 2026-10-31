@@ -4,6 +4,8 @@
 
 原主会话是用户唯一入口。开发者各自隔离开发和自测；唯一交付者做非作者审核、协调原作者修复，并在获授权后串行核对 CI、合入 main。代码任务经必要验收、集成审核和目标 main 包含关系核对后结束；无代码改动的排查、审阅、探索任务经交付者核验当前成果后结束，明确要求用户验收的仍等用户通过。用户一次只处理一件事，用户指定优先，其余待解阻事项与就绪验收同级 FIFO；已授权自动验收按原授权完成。main 或证据过期则同步重测、维护同一 MR；部署另用冻结提交与制品，交付职责本身不增加 Git 或部署权限。
 
+新增需求先由主会话讨论对齐、拆合 spec 并自行对照讨论核对，再向用户呈现简短拆合及派发摘要并取得审批；不要求逐行复审 spec。每个获批需求绑定一名开发者、一工作树及一个 PR，不按模块长期派人。指令先唯一归属，模糊部分暂存；依赖经集成核实后加入目标待办，不广播或自动中断。新查询和分析由主会话完成，已有只读任务保留原完成协议。入口、证据结构及已发生派发的事实登记见[需求收口与路由](skills/isolated-parallel-development-coordination/references/demand-routing.md)。
+
 **初始私有 main 基线已提交；本轮生命周期增量仍为本地候选，未发布、未全局安装。首版不支持空闲自动唤醒。** 协调者进入或结束一次工作时显式收件、对账和收口；没有后台轮询。实际 CLI 的隔离插件注册和两项目技能解析、Desktop 对话自动使用、原生 executor 关闭/恢复分别验收，并绑定各自实测源码；目录夹具或旧源码通过不能替代新候选宿主验收。
 
 组件按冻结清单逐文件取入，见 [CORE 来源](provenance/core.json)、[RESOURCE 来源](provenance/resource.json)。组合测试与非作者复核绑定后才可称为本地集成就绪；不能相加组件的旧测试数。真实宿主加载与回收仍是单列边界。
@@ -28,7 +30,7 @@ python -B tools/profile.py uninstall --profile C:/explicit-isolated-profile
 
 在受信宿主代码中，`ResourceBridge.admit` 从真实 RESOURCE 许可生成 CORE admission；只有 granted 才调用已授权的宿主执行入口。`cleanup` 联接 CORE 的当前清理 intent 和 RESOURCE 实际回执，`reconcile_cleanup` 对账未知结果，`release_agent_quota` 只接受 CORE 已确认的关闭/未启动事实。桥接器不另存任务或资源账本，不提供 JSON 自授权。
 
-任务登记明确使用 `task_kind=code|read_only`；旧记录未声明时按代码任务保守处理。只读任务还须明确 `acceptance_type=delivery_verified|user_required`，由 canonical 完成入口核验当前修订、确认依据、成果与源快照，不伪造 MR/CI。不能事后改任务类型、冒认旧 owner 或直接改完成状态来绕过门禁。
+新开发任务登记为 `task_kind=code`；旧记录未声明时按代码任务保守处理。历史 read_only 任务保留 `acceptance_type=delivery_verified|user_required`，由 canonical 完成入口核验当前修订、确认依据、成果与源快照，不伪造 MR/CI。`prepare` 不再创建只读开发者。不能事后改任务类型、冒认旧 owner 或直接改完成状态来绕过门禁。
 
 可复跑的本地检查：
 

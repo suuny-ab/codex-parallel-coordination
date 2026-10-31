@@ -81,6 +81,8 @@ def merge_transition(state, op):
         require(task and task["authorization"]["mr"]["allowed"], "MR maintenance not authorized")
         require(task["phase"] != "completed", "completed MR immutable")
         mr = op["mr"]
+        from demand_routing import pr_guard
+        pr_guard(state, op['task_id'], mr)
         require(mr["provider"] in ('gitlab','github') and mr["id"] and mr["source_branch"] == task["branch"] and
                 mr["target_branch"] == state["project"]["main_branch"], "bad MR fields")
         for key in ("head_sha", "target_sha"):

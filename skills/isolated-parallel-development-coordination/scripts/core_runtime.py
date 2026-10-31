@@ -79,6 +79,9 @@ class Runtime:
         """Queue a real scope before any host side effect; unknown executor is null."""
         with writer_lock(self.path):
             state = self._load(); self._actor(state, actor_id, control=True)
+            require(spec.get('task_kind', 'code') == 'code', 'new queries and read-only analysis stay with main; historical tasks remain recoverable')
+            from demand_routing import prepare_binding
+            binding = prepare_binding(state, spec)
             op = dict(spec, op='register', pending_executor=not spec.get('owner_agent_id'), actor_id=actor_id)
             op.setdefault('owner_agent_id',None)
             state, _ = transition(state, op)
@@ -86,10 +89,59 @@ class Runtime:
                 **{k:spec[k] for k in ('scope','acceptance','user_reference')}))
             state, result = transition(state, dict(op='queue', task_id=spec['task_id'], actor_id=actor_id,
                 reason='Awaiting admitted host execution', user_reference=spec['user_reference']))
+            if binding:
+                state['tasks'][spec['task_id']]['routing'] = binding
             write_atomic(self.path, state)
             return result
 
-    def bind_executor(self, executor_id, routes, actor_id, authority_ref):
+    def routing(self, command, actor_id, *, user_origin=None):
+        """Public intake mutations share the task ledger, lock and audit history."""
+        from demand_routing import apply as route, intake
+        with writer_lock(self.path):
+            original = self._load()
+            # Reject role spoofing before dedup or recording a command.
+            if command['op'] == 'dependency':
+                require(actor_id == original['tasks'][command['source_task']]['owner_agent_id'], 'source developer required')
+            else:
+                self._actor(original, actor_id, control=command['op'] != 'verify-dependency')
+            require(command.get('event_id'), 'stable intake event id required')
+            digest = fingerprint(dict(command=command, actor=actor_id, user_origin=user_origin))
+            prior = intake(original)['events'].get(command['event_id'])
+            if prior:
+                require(prior['fingerprint'] == digest, 'conflicting duplicate intake event')
+                return deepcopy(prior['result'])
+            state = deepcopy(original)
+            try:
+                result = dict(status='recorded', result=route(state, command, actor_id, user_origin))
+            except (ValueError, KeyError, TypeError, OSError) as error:
+                state = original
+                result = dict(status='rejected', reason=str(error))
+            intake(state)['events'][command['event_id']] = dict(fingerprint=digest, command=deepcopy(command),
+                actor_id=actor_id, result=deepcopy(result))
+            self._save(state, dict(op='routing', event_id=command['event_id'], status=result['status']))
+            return result
+
+    def routing_status(self):
+        """Read current routing evidence and canonical task facts without another queue."""
+        from demand_routing import task_version
+        state = self._load()
+        return dict(revision=state['revision'], intake=deepcopy(state['runtime'].get('intake', {})),
+            tasks={key: {field: deepcopy(task.get(field)) for field in
+                ('phase', 'owner_agent_id', 'worktree', 'branch', 'requirements', 'authorization', 'mr', 'worker_run', 'routing')}
+                for key, task in state['tasks'].items()},
+            target_versions={key: task_version(state, key) for key in state['tasks']})
+
+    def bind_observed_dispatch(self, task_id, proof_ref, actor_id):
+        """Register a witnessed external spawn without calling any host tool."""
+        from demand_routing import bind_observed
+        with writer_lock(self.path):
+            state = self._load()
+            result = bind_observed(state, task_id, proof_ref, actor_id)
+            if not result.get('duplicate'):
+                self._save(state, dict(op='bind-observed-dispatch', task_id=task_id, proof=proof_ref))
+            return dict(result, revision=state['revision'])
+
+    def bind_executor(self, executor_id, routes, actor_id, authority_ref, *, task_id=None):
         artifact(authority_ref)
         require(executor_id and routes and set(routes) <= {'native_agent','app_thread'}, 'actual executor routes required')
         for route in routes.values():
@@ -97,6 +149,9 @@ class Runtime:
                 for k in ('target_id','host_id')), 'actual host/target identity required')
         with writer_lock(self.path):
             state = self._load(); self._actor(state, actor_id, control=True)
+            if task_id is not None:
+                from demand_routing import bind_guard
+                bind_guard(state, task_id, executor_id)
             for executor in state['runtime']['executors'].values():
                 for channel, route in routes.items():
                     require(executor['id'] == executor_id or not any(old_channel==channel and
@@ -108,20 +163,25 @@ class Runtime:
                 state['runtime']['executors'][executor_id] = dict(id=executor_id, routes=deepcopy(routes),
                     generation=1, lease='open', execution='unknown', active_children=None, pending_work=None,
                     authority=authority_ref, observation=None)
+            if task_id is not None:
+                state['tasks'][task_id]['owner_agent_id'] = executor_id
+                state['tasks'][task_id]['worker_run']['owner_agent_id'] = executor_id
+            if not old or task_id is not None:
                 self._save(state, dict(op='bind-executor', executor_id=executor_id))
 
-    def launch(self, task_id, adapter, *, attempt_id, admission, authorized, message, spawn=False, executor_id=None):
+    def launch(self, task_id, adapter, *, attempt_id, admission, authorized, message, spawn=False, executor_id=None, route_id=None):
         """One bounded host attempt, no auto close and no automatic side-effect retry."""
         with writer_lock(self.path):
             state = self._load(); self._actor(state, adapter.actor_id)
             self._scope(state,task_id)
             task = state['tasks'][task_id]
-            require(task['requirements'] and task['worker_run']['status'] == 'queued', 'task must be queued')
             require(authorized is True and attempt_id, 'scoped launch authorization required')
             operations = state['runtime']['operations']
             if attempt_id in operations:
                 require(operations[attempt_id]['task_id'] == task_id, 'attempt belongs to another task')
+                require(operations[attempt_id].get('route_id') == route_id, 'attempt belongs to another routing decision')
                 return self._launch_result(state,operations[attempt_id])
+            require(task['requirements'] and task['worker_run']['status'] == 'queued', 'task must be queued')
             require(not any(o.get('task_id')==task_id and o.get('operation') in ('spawn','send') and
                     o['status'] in ('intent','unknown','accepted_unconfirmed') for o in operations.values()),
                     'previous host effect uncertain; reconcile before another attempt')
@@ -149,9 +209,11 @@ class Runtime:
                 require(executor['active_children'] == [] and executor['pending_work'] is False,
                         'executor has uncompleted actions or children')
                 require(not any(t['owner_agent_id'] == executor_id for t in running), 'executor already executing')
+            from demand_routing import launch_guard
+            route = launch_guard(state, task_id, route_id, spawn=spawn, executor_id=executor_id, message=message)
             record = dict(operation='spawn' if spawn else 'send', task_id=task_id, attempt_id=attempt_id,
                 request_id=permit['request_id'], permit_id=permit['permit_id'], admission=admission,
-                status='intent', executor_id=executor_id,launch_identity=permit['launch_identity'])
+                status='intent', executor_id=executor_id,launch_identity=permit['launch_identity'],route_id=route_id)
             operations[attempt_id] = record
             if not adapter.capabilities()['spawn' if spawn else 'existing_message']:
                 record.update(status='unsupported',reason='required authorized host capability unavailable')
@@ -164,6 +226,8 @@ class Runtime:
             target = None if spawn else executor['routes'][adapter.channel]['target_id']
             if spawn:
                 require(task['owner_agent_id'] is None,'existing task owner cannot be replaced by a new spawn')
+            if route is not None:
+                route['attempt_id'] = attempt_id
             # Persist before invoking a tool. A crash leaves intent/unknown, never a second send.
             self._save(state, dict(op='launch-intent', task_id=task_id, attempt_id=attempt_id))
             try:
@@ -528,20 +592,23 @@ def main():
     p.add_argument('--state-root',required=True);p.add_argument('--project-root',required=True)
     sub=p.add_subparsers(dest='command',required=True)
     init=sub.add_parser('init');init.add_argument('--coordinator',required=True);init.add_argument('--worker-capacity',type=int,default=4)
-    sub.add_parser('recover');sub.add_parser('capabilities')
-    for name in ('apply','prepare','cycle','resolve-next','record-main','complete-read-only'):
+    sub.add_parser('recover');sub.add_parser('capabilities');sub.add_parser('routing-status')
+    for name in ('apply','prepare','cycle','resolve-next','record-main','complete-read-only','routing'):
         cmd=sub.add_parser(name);cmd.add_argument('input');cmd.add_argument('--actor',required=True)
     args=p.parse_args();runtime=Runtime(args.state_root,args.project_root)
     if args.command=='init': result=runtime.initialize(args.coordinator,worker_capacity=args.worker_capacity)
     elif args.command=='recover':result=runtime.recover()
+    elif args.command=='routing-status':result=runtime.routing_status()
     elif args.command=='capabilities':result=dict(idle_wakeup=False,callbacks_required_for_host_side_effects=True,global_install=False)
     elif args.command=='cycle':result=runtime.cycle(ref(args.input),args.actor)
     elif args.command=='record-main':result=runtime.record_main_inclusion(ref(args.input),args.actor)
     elif args.command=='complete-read-only':result=runtime.complete_read_only(ref(args.input),args.actor)
     else:
-        method={'apply':runtime.apply,'prepare':runtime.prepare,'resolve-next':runtime.resolve_and_next}[args.command]
+        method={'apply':runtime.apply,'prepare':runtime.prepare,'resolve-next':runtime.resolve_and_next,'routing':runtime.routing}[args.command]
         result=method(load(args.input),args.actor)
     print(json.dumps(result,ensure_ascii=False))
+    if result.get('status') == 'rejected':
+        sys.exit(1)
 
 
 if __name__=='__main__':

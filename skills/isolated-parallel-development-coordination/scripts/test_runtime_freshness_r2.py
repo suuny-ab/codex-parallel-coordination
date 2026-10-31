@@ -61,11 +61,12 @@ class RuntimeFreshnessTests(core_tests.CoreFixture):
                 authorized=True,message='different task',executor_id='worker-A')
         self.assertEqual(calls,[]);self.assertEqual(before,self.runtime.path.read_bytes())
 
-    def test_late_binding_allows_an_executor_whose_other_task_is_completed(self):
+    def test_late_binding_new_goal_requires_routing_even_after_old_task_completed(self):
         self.prepare('A',owner='worker-A');self.reload()
         self.state['tasks']['A'].update(phase='completed',merge=dict(verified=True,head_sha='a'*40));self.store()
         self.prepare('B');self.bind()
         adapter,calls=self.adapter({'send_input':{'submission_id':'new-task'},'wait_agent':{'status':{'native-A':'running'}}})
-        result=self.runtime.launch('B',adapter,attempt_id='after-completed',admission=self.permit(task='B',attempt='after-completed',executor='worker-A'),
-            authorized=True,message='separately authorized new task',executor_id='worker-A')
-        self.assertEqual(result['status'],'running');self.assertEqual(len(calls),2)
+        with self.assertRaisesRegex(ValueError,'routing decision'):
+            self.runtime.launch('B',adapter,attempt_id='after-completed',admission=self.permit(task='B',attempt='after-completed',executor='worker-A'),
+                authorized=True,message='separately authorized new task',executor_id='worker-A')
+        self.assertEqual(calls,[])
