@@ -59,7 +59,8 @@ class TaskHandoffTests(unittest.TestCase):
         self.assertIn('已派发', progress['stage'])
         plan = self.plan()
         self.assertEqual(plan['host_call']['tool'], APP)
-        self.assertEqual(plan['host_call']['arguments']['threadId'], 'native-fixture')
+        self.assertEqual(plan['host_call']['arguments'], dict(threadId='native-fixture', turnLimit=1,
+            includeOutputs=False, maxOutputCharsPerItem=1800))
         self.assertEqual(plan['next_owner'], self.actor)
         self.assertEqual(len(self.f.calls), 2)
         self.assertNotIn('spawn_agent', json.dumps(plan))
@@ -163,6 +164,37 @@ class TaskHandoffTests(unittest.TestCase):
         self.assertEqual(self.f.runtime._load()['receipts'], {})
         with self.assertRaises(ValueError):
             self.f.runtime.handoff('A', self.actor, observation_ref=self.observation(final='accepted'), report_ref=report)
+
+    def test_size_rejection_is_preserved_without_receipt_or_ledger_change(self):
+        plan = self.plan()
+        raw = dict(isError=True, content=[dict(type='text', text='Tool response exceeds the size limit. '
+            'Request fewer turns or omit outputs. A single oversized turn cannot be returned by this tool.')])
+        capture = self.f.json('size-rejection.json', dict(schema='task-handoff-observation/1', binding=plan['binding'],
+            tool=APP, arguments=plan['host_call']['arguments'], result=raw))
+        before = self.f.runtime.path.read_bytes(), Path(capture['path']).read_bytes()
+        with self.assertRaisesRegex(ValueError, 'host tool rejected'):
+            self.f.runtime.handoff('A', self.actor, observation_ref=capture)
+        self.assertEqual(before, (self.f.runtime.path.read_bytes(), Path(capture['path']).read_bytes()))
+        self.assertEqual(self.f.runtime._load()['receipts'], {})
+
+    def test_truncated_final_report_path_cannot_enter_receipt(self):
+        report = self.report()
+        capture = self.observation(final='Final report: '+report['path'][:-8]+'... [truncated]')
+        before = self.f.runtime.path.read_bytes()
+        with self.assertRaisesRegex(ValueError, 'exact report'):
+            self.f.runtime.handoff('A', self.actor, observation_ref=capture, report_ref=report)
+        self.assertEqual(before, self.f.runtime.path.read_bytes())
+        self.assertEqual(self.f.runtime._load()['receipts'], {})
+
+    def test_verbose_capture_cannot_be_relabelled_as_compact_observation(self):
+        report = self.report()
+        plan = self.plan()
+        plan['host_call']['arguments'].update(includeOutputs=True, maxOutputCharsPerItem=12000)
+        capture = self.observation(final=report['path'], plan=plan)
+        before = self.f.runtime.path.read_bytes()
+        with self.assertRaisesRegex(ValueError, 'binding differs'):
+            self.f.runtime.handoff('A', self.actor, observation_ref=capture, report_ref=report)
+        self.assertEqual(before, self.f.runtime.path.read_bytes())
 
     def test_cli_plan_is_reusable_and_read_only(self):
         script = test_dispatch.ROOT/'skills/isolated-parallel-development-coordination/scripts/core_runtime.py'

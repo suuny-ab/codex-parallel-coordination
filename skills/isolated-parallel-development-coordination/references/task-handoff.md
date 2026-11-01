@@ -29,7 +29,7 @@ const capture = {
 };
 ```
 
-当前支持实际 `mcp__codex_app__read_thread({threadId,turnLimit:1,includeOutputs:true,maxOutputCharsPerItem:12000})` 或 `multi_agent_v1__wait_agent({targets:[原target],timeout_ms:10000})`，只选择确实暴露的一项。App 完成必须有最新 turn 的 `agentMessage` final/final_answer；原生完成必须有对应 target 的 completed 文本。该文本须包含这份绝对报告路径。没有可靠终态来源时保留 unknown，不用 idle、发送接受或宿主 completed 代替作者交付。
+当前支持实际 `mcp__codex_app__read_thread({threadId,turnLimit:1,includeOutputs:false,maxOutputCharsPerItem:1800})` 或 `multi_agent_v1__wait_agent({targets:[原target],timeout_ms:10000})`，只选择确实暴露的一项。App 使用紧凑正式参数省略工具/命令输出，保留最新 turn 状态及原 final，避免单个巨大 turn 超出工具响应限制；保存的仍是该次实际调用的完整原始返回，不是自行选择或删字段后的对象。App 完成必须有最新 turn 的 `agentMessage` final/final_answer；原生完成必须有对应 target 的 completed 文本。该文本须包含这份完整绝对报告路径，路径被截断或缺失仍拒绝。isError 超限拒绝保留原件，不映射为完成，也不能把旧大返回改参数重包成紧凑观察。没有可靠终态来源时保留 unknown，不用 idle、发送接受或宿主 completed 代替作者交付。
 
 ## 报告门禁与修订
 

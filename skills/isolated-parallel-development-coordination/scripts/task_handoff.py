@@ -98,7 +98,7 @@ def receivers(state):
 
 def arguments(tool, target):
     if tool == APP:
-        return dict(threadId=target, turnLimit=1, includeOutputs=True, maxOutputCharsPerItem=12000)
+        return dict(threadId=target, turnLimit=1, includeOutputs=False, maxOutputCharsPerItem=1800)
     require(tool == NATIVE, 'unsupported observation tool; do not substitute or create a chat')
     return dict(targets=[target], timeout_ms=10000)
 
