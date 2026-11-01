@@ -58,6 +58,8 @@ result = check_status(FIXED_TRUSTED_PROJECT, REVIEWED_INSTALLATION_BINDING,
 
 `kind` 也可为 `host_metadata`。宿主负责观察来源、身份真实性和证据保全，普通字典和文件 hash 不认证宿主。核验器检查当前会话绑定、字段、受信安装根、已审入口 hash、当前磁盘入口 hash、提交和清单版本；没有完整观察、不同会话或未纳入安装绑定的组件均为未知。不同提交/入口字节明确不一致。结果只证明该会话、时点、已观察组件，不能据一个派发模块的使用声称整个插件/所有 skill 已重新加载。API 不执行宿主工具或生成加载证据。
 
+两种 `kind` 都要求 `evidence` 指向实际保全的普通文件，并读取核对 SHA-256；每份证据限 30 MB，读取最多上限加一个字节以识别增长超限。文件缺失、不可读、不是普通文件或超限时返回 unknown（`session_evidence_unreadable_or_over_limit`），内容与引用不符时返回 unknown（`session_evidence_hash_mismatch`）。只有引用完整性通过才继续会话入口比对。文件只作为字节依据读取，不执行、解析或从其内容取得宿主身份/安装权限；来源真实性仍由受信宿主保证。
+
 ## 回归与真实宿主边界
 
 ```powershell

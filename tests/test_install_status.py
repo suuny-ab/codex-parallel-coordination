@@ -32,6 +32,10 @@ class InstallationStatus(unittest.TestCase):
         for name in ("plugin.json", ".codex-plugin/plugin.json", "capabilities.json"):
             (self.root / name).write_bytes(package.encoded(dict(name=package.NAME, version="0.1.0")))
         self.binding = dict(source_root=str(self.root), source_head=A, files=status.inventory(self.root))
+        self.receipt = self.base / "host-receipt.json"
+        self.receipt_bytes = b"retained synthetic host observation; never executed or parsed"
+        self.receipt.write_bytes(self.receipt_bytes)
+        self.receipt_digest = package.digest(self.receipt_bytes)
         for name in ("config.toml", "ledger.json", ".git/refs/heads/main", "business.sqlite"):
             target = self.project / name
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -57,7 +61,7 @@ class InstallationStatus(unittest.TestCase):
         value = dict(session_id="actual-host-fixture", kind="trusted_entry_use", entry=ENTRY,
             source_root=str(self.root), source_commit=A, manifest_version="0.1.0",
             loaded_sha256=self.binding["files"][ENTRY], observed_at=datetime.now(timezone.utc).isoformat(),
-            evidence=dict(path=str(self.base / "host-receipt.json"), sha256="c" * 64))
+            evidence=dict(path=str(self.receipt), sha256=self.receipt_digest))
         value.update(changes)
         return dict(session_id="actual-host-fixture", session_probe=lambda: value)
 
@@ -158,6 +162,40 @@ class InstallationStatus(unittest.TestCase):
                         {"loaded_sha256": None}, {"evidence": {}}, {"observed_at": "bad date"}):
             with self.subTest(changes=changes):
                 self.assertEqual(self.check(**self.session(**changes))["session"]["status"], "unknown")
+
+    def test_retained_session_evidence_missing_tampered_or_valid_is_read_only(self):
+        for kind in ("host_metadata", "trusted_entry_use"):
+            for mode in ("missing", "tampered", "valid"):
+                with self.subTest(kind=kind, mode=mode):
+                    self.receipt.write_bytes(self.receipt_bytes)
+                    if mode == "missing":
+                        self.receipt.unlink()
+                    elif mode == "tampered":
+                        self.receipt.write_bytes(b"changed after observation")
+                    before = {str(path): package.digest(path.read_bytes())
+                              for path in self.base.rglob("*") if path.is_file()}
+                    result = self.check(**self.session(kind=kind))
+                    self.assertEqual(result["session"]["status"], "consistent" if mode == "valid" else "unknown")
+                    if mode != "valid":
+                        self.assertIn("session_evidence_", result["session"]["reason"])
+                    after = {str(path): package.digest(path.read_bytes())
+                             for path in self.base.rglob("*") if path.is_file()}
+                    self.assertEqual(before, after)
+
+    def test_session_evidence_read_limit(self):
+        self.receipt.write_bytes(b"x" * 512)
+        options = self.session(evidence=dict(path=str(self.receipt), sha256=package.digest(b"x" * 512)))
+        with patch.object(status, "MAX_BYTES", 256):
+            result = self.check(**options)
+        self.assertEqual(result["session"]["status"], "unknown")
+        self.assertIn("session_evidence_", result["session"]["reason"])
+
+    def test_session_evidence_directory_is_unknown(self):
+        self.receipt.unlink()
+        self.receipt.mkdir()
+        result = self.check(**self.session())
+        self.assertEqual(result["session"]["status"], "unknown")
+        self.assertEqual(result["session"]["reason"], "session_evidence_unreadable_or_over_limit")
 
     def test_old_session_commit_and_version_are_separate(self):
         result = self.check(**self.session(source_commit=B, manifest_version="0.0.9"))

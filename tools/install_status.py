@@ -56,9 +56,13 @@ def scrub(value):
 
 def read_bytes(path):
     path = filesystem(Path(path))
-    if path.stat().st_size > MAX_BYTES:
+    if not path.is_file() or path.stat().st_size > MAX_BYTES:
         raise ValueError("metadata_limit")
-    return path.read_bytes()
+    with path.open("rb") as stream:
+        content = stream.read(MAX_BYTES + 1)
+    if len(content) > MAX_BYTES:
+        raise ValueError("metadata_limit")
+    return content
 
 
 def read_json(path):
@@ -236,6 +240,14 @@ def session_status(installation, binding, session_id, probe):
             not Path(value["evidence"].get("path", "")).is_absolute() or
             not value.get("observed_at") or not value.get("entry") or not value.get("source_root")):
         result["reason"] = "session_evidence_incomplete_or_wrong_session"
+        return result
+    try:
+        evidence_bytes = read_bytes(value["evidence"]["path"])
+    except ERRORS as error:
+        result.update(reason="session_evidence_unreadable_or_over_limit", error_category=type(error).__name__)
+        return result
+    if package.digest(evidence_bytes) != value["evidence"]["sha256"]:
+        result["reason"] = "session_evidence_hash_mismatch"
         return result
     root, entry = Path(value["source_root"]), value["entry"]
     if not root.is_absolute():
