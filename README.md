@@ -52,6 +52,7 @@ codex plugin marketplace add suuny-ab/codex-parallel-coordination --ref main
 | 反馈问题、提交改进 | [贡献说明](CONTRIBUTING.md) |
 | 已合入的功能与已知限制 | [变更记录](CHANGELOG.md) |
 | 本地链接、包内容及测试 | [验证与打包](docs/validation.md) |
+| 升级前后只读核验云端、本机与会话入口 | [插件版本状态核验](docs/install-status.md) |
 | agent 执行时的角色指引 | [SKILL 入口](skills/isolated-parallel-development-coordination/SKILL.md)及[共同规则](skills/isolated-parallel-development-coordination/references/current-rules.md) |
 | 开发接口 | [CORE 账本契约](skills/isolated-parallel-development-coordination/references/core-runtime.md)、[RESOURCE 资源 API](docs/resource/API.md)、[标准派工](skills/isolated-parallel-development-coordination/references/standard-dispatch.md) |
 | 来源及旧失败轨迹 | [历史索引](skills/isolated-parallel-development-coordination/references/history/index.md) |
