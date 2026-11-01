@@ -18,7 +18,8 @@ def approval(state, key, reference, actor):
     task = state['tasks'][key]
     value = load_bound(reference)
     require(value.get('schema') == 'approved-dispatch-plan/1' and value.get('approval') == 'approved' and
-        value.get('source') == SOURCE and value.get('main_conversation') == state['coordinator_id'] and
+        value.get('source') in (SOURCE, 'explicit async user approval in original main conversation') and
+        value.get('main_conversation') == state['coordinator_id'] and
         value.get('user_quote'), 'original approved dispatch required')
     matches = [t for t in value.get('tasks', []) if t.get('id') == key]
     require(len(matches) == 1 and Path(matches[0].get('worktree', task['worktree'])).resolve() == Path(task['worktree']).resolve() and

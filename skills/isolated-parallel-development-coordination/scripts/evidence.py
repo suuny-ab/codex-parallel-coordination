@@ -54,6 +54,8 @@ def preserved_read(state, task_id):
     from resource_lifecycle import preserved_binding, remote_binding
     from cleanup import canonical_path
     inventory = json.loads(original_artifact(reference).read_text(encoding='utf-8-sig'))
+    from preservation_contract import verify_inventory
+    verify_inventory(state, task_id, inventory)
     require(task['phase'] == 'completed' and task.get('merge', {}).get('verified') and
         inventory.get('project_id') == state['project']['id'] and inventory.get('task_id') == task_id and
         inventory.get('binding') == preserved_binding(task), 'preserved completed-task binding changed')

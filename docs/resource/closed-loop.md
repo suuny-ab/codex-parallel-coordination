@@ -1,5 +1,7 @@
 # 新任务资源闭环
 
+冻结测试结果或基线内的临时指针，须经[受信分类入口](preservation-boundary.md)作为完整捕获包保全；文件内部标签不授予依赖豁免。
+
 本入口仅用于批准后的正常新代码任务，不扫描或接管旧目录。原主会话先准备批准、任务和路由，宿主按实际能力执行创建；集成者仍须独立审核、核对目标 main，完成外部保全后在当前具体授权内回收。作者上下文在此之前保留。长期集成者不作为开发资源登记。
 
 使用同一个 Runtime、Controller、ArtifactCleanup 和 ResourceBridge。初始化时 RESOURCE policy 的项目根必须包含该 Runtime 的 cleanup_root，cleanup_roots 必须允许该根；两者不相交时在 Git 创建前拒绝。目录由宿主选择，不硬编码机器路径，不扩大到任意目录。
