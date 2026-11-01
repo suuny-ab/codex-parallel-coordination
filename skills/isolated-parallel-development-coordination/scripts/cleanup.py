@@ -222,6 +222,8 @@ def run(runtime,task_id,operation_id,preservation_ref,invoke,actor_id,*,authoriz
             old=operations[operation_id]
             require(old['operation']=='cleanup' and old['task_id']==task_id and old['preservation']==preservation_ref and
                     old['scope']==scope,'cleanup ID belongs elsewhere')
+            require(old.get('cleanup_authorized') is True and old.get('resource_authority')==authority and
+                    old.get('actor_id',actor_id)==actor_id,'original cleanup authorization changed')
             if old['status']=='cleanup_completed':return deepcopy(old)
         task=state['tasks'][task_id]
         resources=[r for r in state['runtime'].get('resources',{}).values() if r['task_id']==task_id]
@@ -278,11 +280,31 @@ def run(runtime,task_id,operation_id,preservation_ref,invoke,actor_id,*,authoriz
                     record['results'][rid]=result
                     runtime._save(state,dict(op='aggregate-confirmed-agent-close',resource_id=rid))
                     continue
-                resource['cleanup_status']='intent'
                 guard=dict(project_id=runtime.project_id,task_id=task_id,resource_id=rid,attempt_id=resource['attempt_id'],
                     cleanup_operation_id=operation_id,preservation=preservation_ref,scope=scope,path=resource.get('path'))
                 for key in ('request_id','nonce'):
                     if key in resource.get('process_identity',{}):guard[key]=resource['process_identity'][key]
+                if continuing and resource['cleanup_status']=='retained':
+                    observation=resource.get('cleanup_observations',[])[-1:]
+                    require(observation,'retained cleanup requires a public effect observation')
+                    facts=load_bound(observation[0]);previous=load_bound(resource['cleanup_proof'])
+                    require(facts.get('resource_id')==rid and facts.get('status')=='retained' and facts.get('evidence') and
+                            all(previous.get(k)==v for k,v in guard.items()),'retained observation/intent identity changed')
+                    for item in facts['evidence']:artifact(item)
+                    capture=record['callback_captures'][rid]
+                    receipt=callback_result(runtime.directory,capture)
+                    require(receipt and receipt==record.get('callback_results',{}).get(rid) and
+                            load_bound(receipt)['result']==resource.get('cleanup_result'),
+                            'missing original cleanup return; observe only')
+                    safe_to_save=False
+                    require(runtime._load()['revision']==state['revision'],'cleanup revision changed before resumption')
+                    safe_to_save=True
+                    record.setdefault('resumptions',[]).append(dict(resource_id=rid,based_on_revision=state['revision'],
+                        previous_status=record['status'],previous_result=deepcopy(resource['cleanup_result']),
+                        observation=observation[0],callback_capture=deepcopy(capture),callback_result=receipt))
+                    record['status']='intent'
+                    guard['intent_revision']=state['revision']+1
+                resource['cleanup_status']='intent'
                 proof_path=io_path(runtime.directory/'cleanup-proofs'/(fingerprint(guard)+'.json'))
                 proof_path.parent.mkdir(exist_ok=True)
                 if proof_path.exists():require(load_bound(ref(proof_path))==guard,'cleanup proof changed')
@@ -359,6 +381,8 @@ def verify(runtime,context,proof):
                     'task resource authority changed')
         require(resource['cleanup_status']=='intent' and operation['status']=='intent' and
             operation['cleanup_authorized'] is True and load_bound(resource['cleanup_proof'])==value,'not a current canonical cleanup intent')
+        if 'intent_revision' in value:
+            require(value['intent_revision']==state['revision'],'cleanup intent revision changed')
         require(context.get('resource_id',context.get('request_id'))==resource['id'] and
             all(context.get(k)==value.get(k) for k in ('project_id','task_id','attempt_id')),'resource context differs')
         if resource.get('path'):require(canonical_path(context['path'])==canonical_path(resource['path']),'resource path differs')
