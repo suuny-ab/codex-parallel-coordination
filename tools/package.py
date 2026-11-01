@@ -13,7 +13,7 @@ NAME = "codex-parallel-coordination"
 MANIFEST = "PACKAGE-MANIFEST.json"
 FILES = (".gitignore", "README.md", "requirements-validation.txt", "plugin.json", "capabilities.json", ".codex-plugin/plugin.json",
          ".agents/plugins/marketplace.json")
-TREES = {"src": {".py"}, "skills": {".py", ".md", ".yaml", ".json"},
+TREES = {"src": {".py"}, "skills": {".py", ".mjs", ".md", ".yaml", ".json"},
          "tools": {".py"}, "tests": {".py"}, "docs": {".md"}, "provenance": {".json"}}
 LOCAL_DIRS = {".git", "__pycache__", ".venv", "venv", "cache", ".cache", ".pytest_cache",
               "evidence", "runtime", "profiles", "local", "build", "dist"}

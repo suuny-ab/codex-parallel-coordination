@@ -48,6 +48,14 @@ class Packaging(unittest.TestCase):
         _, files = package.inspect(self.archive)
         self.assertNotIn(".env", files)
 
+    def test_finite_dispatch_host_module_is_in_the_portable_archive(self):
+        module = self.source / 'skills/test/dispatch_host.mjs'
+        module.write_text('export const fixture = true;\n', encoding='utf-8')
+        archive = self.base / 'with-host.zip'
+        package.build(self.source, archive)
+        _, files = package.inspect(archive)
+        self.assertEqual(files['skills/test/dispatch_host.mjs'], module.read_bytes())
+
     def test_skill_runtime_ledger_and_cache_are_excluded_from_archive(self):
         for directory in ["Evidence", "RUNTIME", "profiles", "__pycache__", "Cache"]:
             data = self.source / "skills/test" / directory / "state.json"
