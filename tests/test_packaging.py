@@ -48,6 +48,15 @@ class Packaging(unittest.TestCase):
         _, files = package.inspect(self.archive)
         self.assertNotIn(".env", files)
 
+    def test_public_root_documents_and_license_are_distributed_unchanged(self):
+        manifest, files = package.inspect(self.archive)
+        root = Path(__file__).resolve().parents[1]
+        for name in ("README.md", "LICENSE", "CONTRIBUTING.md", "CHANGELOG.md"):
+            with self.subTest(name=name):
+                expected = (root / name).read_bytes()
+                self.assertEqual(files[name], expected)
+                self.assertEqual(manifest["files"][name], package.digest(expected))
+
     def test_finite_dispatch_host_module_is_in_the_portable_archive(self):
         module = self.source / 'skills/test/dispatch_host.mjs'
         module.write_text('export const fixture = true;\n', encoding='utf-8')

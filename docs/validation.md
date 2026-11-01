@@ -13,6 +13,17 @@ python -X utf8 -B tools/check_guidance.py --archive C:/explicit-artifacts/candid
 
 文档检查只核本次现行入口的本地链接/锚点及包内同路径，不访问外部 URL，不证明全部自然语言等价。skill 结构另用当前可用的官方 `quick_validate.py` 检查 frontmatter、命名及未完成占位；验证依赖按 [requirements-validation.txt](../requirements-validation.txt) 在获准的隔离环境准备，不写共享解释器。规则语义由作者对应表自核、非作者独审及授权后真实流程复核。
 
+本次公开入口与许可分发的受影响回归：
+
+```powershell
+python -X utf8 -B -m unittest discover -s tests -p test_public_docs.py -v
+python -X utf8 -B -m unittest discover -s tests -p test_packaging.py -v
+```
+
+前者把新增公开文档和原有现行指引放在同一链接/锚点检查中，对源码及真实构建包分别核对，并验证标准 MIT 文本及包内字节。后者检查固定根文件分发及既有便携包边界；其中 install/upgrade 等用例只操作临时文件夹具，不安装宿主插件。`LICENSE`、`CONTRIBUTING.md`、`CHANGELOG.md` 必须随根文件清单分发，上手及工作流随 docs 目录分发。
+
+外部链接和官方安装路线需另行核实；测试不会登记 marketplace、改全局配置或创建 agent。文档命令以仓库根为工作目录，示例输出路径是读者自行选择的任务目录。Windows 深目录如遇路径长度错误，可从较短的专属 checkout 验证，或显式使用扩展绝对脚本路径；Git 可仅对当前命令加 `-c core.longpaths=true`，无需改全局设置。
+
 ## 隔离副本工具
 
 ```powershell
