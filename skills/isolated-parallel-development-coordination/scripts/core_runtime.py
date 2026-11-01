@@ -294,6 +294,10 @@ class Runtime:
                     from resource_lifecycle import agent
                     agent(state,task_id,admission)
                 executor.update(active_children=None,pending_work=None,observation=None)
+                # Preserve the actual spawn identity before a distinct observation
+                # can time out or the bounded host bridge can be interrupted.
+                record.update(status='accepted_unconfirmed', reason='message accepted; observation pending')
+                self._save(state, dict(op='launch-accepted', task_id=task_id, attempt_id=attempt_id))
                 try:
                     observed = adapter.call('observe', target=executor['routes'][adapter.channel]['target_id'], authorized=True)
                     executor['execution'] = observed.get('execution','unknown')
