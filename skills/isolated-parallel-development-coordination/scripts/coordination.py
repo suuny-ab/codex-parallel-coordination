@@ -136,7 +136,10 @@ def receipt_context(state, p):
     if p.get('origin_mode') == 'observed_terminal':
         from demand_routing import observed_receipt_origin
         observed_receipt_origin(state, p)
-    if p["channel"] == "app_thread" or state.get("delivery", {}).get("transport", {}).get("mode") == "mixed_verified":
+    if p.get('origin_mode') == 'task_handoff':
+        from task_handoff import receipt_origin
+        receipt_origin(state, p)
+    elif p["channel"] == "app_thread" or state.get("delivery", {}).get("transport", {}).get("mode") == "mixed_verified":
         d = state.get("delivery")
         require(d and d.get("transport", {}).get("mode") in ("fixture", "app_thread_verified", "mixed_verified"), "App thread receipt route not declared")
         raw = load_bound(p["transport_evidence"])
@@ -158,6 +161,9 @@ def receipt_context(state, p):
 def receipt_report(state, payload):
     task = state["tasks"][payload["task_id"]]
     report = load_bound(payload["report"])
+    if payload.get('origin_mode') == 'task_handoff':
+        from task_handoff import report_contract
+        report_contract(state, payload, report)
     require(report["task_id"] == (task["report_task_id"] or payload["task_id"]) and
             type(report["delivery_revision"]) is int and report["delivery_revision"] == payload["delivery_revision"],
             "report identity mismatch")
@@ -477,8 +483,14 @@ def consume(state, payload):
         return "stale"
     if task.get("worker_run", {}).get("status") == "queued":
         launch = state.get('runtime',{}).get('operations',{}).get(task['worker_run'].get('attempt_id'),{})
-        require(launch.get('status')=='accepted_unconfirmed' and launch.get('task_id')==task_id and
-                launch.get('executor_id')==task['owner_agent_id'], "terminal arrived for queued work; reconcile dispatch first")
+        if payload.get('origin_mode') == 'task_handoff':
+            # receipt_context already verified the original registered target and
+            # actual final. This also covers a publicly bound manual author after
+            # the old launch was confirmed not started; never rewrite that launch.
+            require(revision >= task['worker_run']['expected_delivery_revision'], 'receipt predates current worker run')
+        else:
+            require(launch.get('status')=='accepted_unconfirmed' and launch.get('task_id')==task_id and
+                    launch.get('executor_id')==task['owner_agent_id'], "terminal arrived for queued work; reconcile dispatch first")
         receipt_report(state,payload)  # A verified fast final proves execution, never a guessed running state.
     if task.get("worker_run", {}).get("status") == "running":
         require(revision >= task["worker_run"]["expected_delivery_revision"], "receipt predates current worker run")

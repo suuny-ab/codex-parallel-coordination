@@ -303,7 +303,10 @@ class StandardDispatch:
             self._register(request, dict(id=task_id + ':agent', kind='agent', executor_id=owner,
                                         generation=executor['generation']))
         if outcome['status'] != 'running':
-            self._record(identity, status=outcome['status'], reason='Observe original launch; do not resend or change id')
+            self._record(identity, status=outcome['status'],
+                reason=outcome.get('reason') or 'Observe original launch; do not resend or change id',
+                next_action='Resolve native capacity; RESOURCE permit is separate; no automatic retry' if
+                    outcome['status'] == 'capacity' else 'Observe original launch; do not resend or change id')
             return self.status(identity)
         if old.get('handoff_intent'):
             return self.status(identity)
@@ -365,16 +368,29 @@ class StandardDispatch:
             route = state['runtime']['intake']['routes'][launch['route_id']]
             owner = state['tasks'][task_id]['owner_agent_id']
             stage, actual = context['stage'], journal['actual_agent_id']
+            capacity_detail = None
             require(context['operation_id'] == identity + (':handoff' if stage == 'handoff' else ':launch'),
                     'host result operation differs')
             if stage == 'spawn':
                 require(packet['tool'] == 'multi_agent_v1__spawn_agent' and intent['canonical_tool'] == 'spawn_agent' and
                         packet['arguments'] == dict(message=route['message']), 'spawn result differs from original route')
                 from host_adapter import unwrap
-                raw = unwrap(response['result']) if not response.get('error') else {}
+                if response.get('error'):
+                    raw = {}
+                elif isinstance(response.get('result'), dict) and response['result'].get('isError'):
+                    rejected = response['result']
+                    raw = dict(error=dict(message='\n'.join(b['text'] for b in rejected.get('content', [])
+                        if b.get('type') == 'text'), raw=rejected))
+                else:
+                    raw = unwrap(response['result'])
                 returned = raw.get('agent_id', raw.get('id')) if not raw.get('error') else None
                 require(returned == actual and (actual is None or isinstance(actual, str) and actual.strip()),
                         'actual spawn identity differs from raw host result')
+                from host_adapter import capacity_error
+                detail = response.get('error') or raw.get('error')
+                detail = detail if isinstance(detail, dict) else dict(message=str(detail))
+                if actual is None and capacity_error(detail):
+                    capacity_detail = detail
             elif stage == 'observe':
                 require(owner is not None, 'observation has no known executor')
                 target = state['runtime']['executors'][owner]['routes']['native_agent']['target_id']
@@ -401,6 +417,14 @@ class StandardDispatch:
                 self._register(request, dict(id=task_id + ':agent', kind='agent', executor_id=executor_id,
                                              generation=executor['generation']))
             retained[stage] = result_ref
+            if capacity_detail:
+                reason = capacity_detail.get('message') or capacity_detail.get('code') or 'native capacity refused'
+                self._record(identity+':launch', status='capacity', error=capacity_detail,
+                    code='agent_capacity_exceeded', reason=reason)
+                self._record(identity, retained_host_results=retained, status='capacity', reason=reason,
+                    next_action='Resolve native capacity; RESOURCE permit is separate; no automatic retry',
+                    next_owner=self.integration_target)
+                return self.status(identity)
             self._record(identity, retained_host_results=retained, status='needs_reconcile',
                 reason='Known host result retained; execution/delivery not inferred', next_action='observe_existing_executor_or_delivery',
                 next_owner=self.integration_target)

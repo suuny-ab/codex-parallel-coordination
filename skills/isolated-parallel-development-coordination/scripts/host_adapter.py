@@ -10,6 +10,23 @@ NATIVE = {'send': 'send_input', 'observe': 'wait_agent', 'spawn': 'spawn_agent',
           'close': 'close_agent', 'resume': 'resume_agent'}
 
 
+class HostCallError(RuntimeError):
+    def __init__(self, detail):
+        self.detail = detail if isinstance(detail, dict) else dict(message=str(detail))
+        super().__init__(self.detail.get('message') or str(detail))
+
+
+def error_detail(error):
+    if isinstance(error, HostCallError):
+        return error.detail
+    return dict(name=type(error).__name__, message=str(error), code=getattr(error, 'code', None))
+
+
+def capacity_error(detail):
+    return detail.get('code') in ('agent_capacity_exceeded', 'max_agents') or \
+        'agent thread limit reached' in str(detail.get('message', '')).lower()
+
+
 def unwrap(result):
     if isinstance(result, dict) and 'content' in result:
         require(not result.get('isError'), 'host tool rejected operation')
@@ -58,14 +75,27 @@ class HostAdapter:
                 args.update(message=message, interrupt=False)
             if operation == 'observe':
                 args = {'ids': [target], 'timeout_ms': 0}
-        raw = unwrap(self.invoke(tool, args))
+        try:
+            invoked = self.invoke(tool, args)
+            if isinstance(invoked, dict) and invoked.get('isError'):
+                texts = [b['text'] for b in invoked.get('content', []) if b.get('type') == 'text']
+                raise HostCallError(dict(message='\n'.join(texts), raw=invoked))
+            raw = unwrap(invoked)
+        except Exception as error:
+            detail = error_detail(error)
+            if operation == 'spawn' and capacity_error(detail):
+                return dict(status='capacity', code='agent_capacity_exceeded', tool=tool, error=detail,
+                            reason=detail.get('message'), response_digest=fingerprint(detail))
+            raise
         # Only structural host facts are retained; never persist session text.
         if raw.get('error'):
             error = raw['error']
-            code = error.get('code') if isinstance(error, dict) else (
-                'agent_capacity_exceeded' if 'agent thread limit reached' in str(error).lower() else 'host_error')
-            return dict(status='capacity' if code in ('agent_capacity_exceeded', 'max_agents') else 'failed',
-                        code=code, tool=tool, response_digest=fingerprint(raw))
+            detail = error if isinstance(error, dict) else dict(message=str(error))
+            capacity = operation == 'spawn' and capacity_error(detail)
+            return dict(status='capacity' if capacity else 'failed',
+                        code='agent_capacity_exceeded' if capacity else detail.get('code') or 'host_error',
+                        error=detail, reason=detail.get('message') or detail.get('code') or 'host_error',
+                        tool=tool, response_digest=fingerprint(raw))
         returned = raw.get('threadId',raw.get('thread',{}).get('id')) if self.channel == 'app_thread' else raw.get('agent_id', raw.get('id'))
         if returned is not None and target is not None:
             require(returned == target, 'host returned a different execution identity')

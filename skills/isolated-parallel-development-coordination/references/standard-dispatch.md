@@ -36,7 +36,7 @@ Python 子进程不能直接调用当前 agent 的 native 工具。`scripts/disp
 ```javascript
 // 宿主先核对已审已装 binding 及 dispatch_entry.mjs 自身 hash，再从该安装路径导入。
 var {loadInstalledDispatch} = await import(VERIFIED_INSTALLED_ENTRY_URL);
-var {DispatchSession} = await loadInstalledDispatch(REVIEWED_INSTALLATION_BINDING);
+var {DispatchSession, serializeHostError} = await loadInstalledDispatch(REVIEWED_INSTALLATION_BINDING);
 var dispatchSession = new DispatchSession({
   python: FIXED_PYTHON_ABSOLUTE_PATH,
   profile: FIXED_HOST_PROFILE,
@@ -48,6 +48,8 @@ var dispatchSession = new DispatchSession({
 });
 nodeRepl.write(JSON.stringify(await dispatchSession.next()));
 ```
+
+上面初始化以及下方每次 `next/reply/verifyHostResult/interrupt` 的外层 Node 工具调用均显式使用 `timeout_ms: 50000`（模块 `NODE_CALL_TIMEOUT_MS` / `session.callTimeoutMs`）。它覆盖45秒会话截止、1秒子进程退出宽限及返回余量；不要用20秒或默认30秒调用等待这个会话。主动取消时显式 `await dispatchSession.interrupt()`，仅向本会话子进程送 EOF、等有界退出；硬 kernel reset 无法保证 finally 执行，遗留锁仍由集成者核原 owner，不自动抢锁。
 
 安装 binding 是集成者独审、安装核对后给受信宿主的 `source_root/source_head/files`，其中 files 是已审全源码的相对路径到 SHA256 映射。`dispatch_entry.mjs` 核对自身所在安装根、每个真实文件及指纹后才加载同一安装内的 host 模块；不回退到作者工作树。binding 不能来自任务 JSON，复制测试也不代表正式安装完成。
 
@@ -66,11 +68,15 @@ for (let count = 0; packet.kind === 'host_call' && count < 3; count++) {
   }
   let result, error = null;
   try { result = await tools[packet.tool](packet.arguments); }
-  catch { error = true; }
+  catch (failure) {
+    error = {name: failure?.name ?? null, message: failure?.message ?? String(failure),
+      code: failure?.code ?? null, string: String(failure)};
+  }
   const reply = await tools.mcp__node_repl__js({
     code: 'nodeRepl.write(JSON.stringify(await dispatchSession.reply(' +
       JSON.stringify(packet.tool) + ',' + JSON.stringify(result ?? null) + ',' +
       JSON.stringify(error) + ')))',
+    timeout_ms: 50000,
     title: 'Continue the same approved dispatch'
   });
   packet = JSON.parse(reply.content.find(b => b.type === 'text').text);
@@ -84,7 +90,9 @@ text(packet);
 
 同一 canonical `runtime.operations` 保存请求指纹、工作树意图、RESOURCE 许可、CORE launch 及交接意图；没有第二份任务队列。分支创建前核对本地与远端 main、真实路径和当前资源策略；只使用本次命令的 `-c core.longpaths=true`。已有工作树只有经原公开资源入口登记且与本次批准、路径和分支一致才可使用。
 
-`queued` 只表示准入等待；没有工作树或 host 调用。Git 创建丢响应后只观察已记录路径，核实实际分支和 HEAD 后继续，不重新 add。spawn 前落 launch intent；spawn 接受后在单独 observe 前持久化实际身份。`unknown/accepted_unconfirmed` 保留原操作和资源，不重发、不换 id。实际 running 才向已授权集成者发一次交接；接受交接不代表独审或最终交付。交接未知也不自动重发。
+`queued` 只表示准入等待；没有工作树或 host 调用。Git 创建丢响应后只观察已记录路径，核实实际分支和 HEAD 后继续，不重新 add。spawn 前落 launch intent；spawn 接受后在单独 observe 前持久化实际身份。`unknown/accepted_unconfirmed` 保留原操作和资源，不重发、不换 id，投影显示“已派发，执行状态待核实”。已知身份的后续观察及报告走[有限交接](task-handoff.md)。原入口实际 running 才向已授权集成者发一次交接；接受交接不代表独审或最终交付。交接未知也不自动重发。
+
+RESOURCE `granted` 只证明本实例准入，不保证原生宿主名额，也不推导全局容量。原生明确 `agent thread limit reached` / 对应容量代码保留原始异常和回执，返回 `capacity`；响应丢失等未知副作用仍为 `unknown`。两者均不自动重派、换 attempt 或释放资源；由集成者按真实事实核对下一动作。
 
 raw host intent/result 和准入、交接回执保存于 profile 的永久外部 evidence_root，带 SHA256 引用。CORE 的作者、任务阶段与资源归属仍为唯一权威。半途故障保留现场，使用同一请求恢复可确定步骤；需要观察的状态交集成者核实，正常保全/回收继续用现有生命周期入口。没有自动删除、回滚或历史修复。
 

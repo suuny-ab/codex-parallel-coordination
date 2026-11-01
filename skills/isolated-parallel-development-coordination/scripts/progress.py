@@ -83,6 +83,13 @@ def task_row(state, task_id, members, observed):
     tasks = [(key, state["tasks"][key]) for key in members]
     running = [(key, t) for key, t in tasks if t.get("worker_run", {}).get("status") == "running"]
     queued = [(key, t) for key, t in tasks if t.get("worker_run", {}).get("status") == "queued"]
+    uncertain = [(key, t) for key, t in queued if (t.get('owner_agent_id') in state.get('runtime', {}).get('executors', {}) and
+        state.get('runtime', {}).get('resources', {}).get(key+':agent', {}).get('executor_id') == t['owner_agent_id']) or any(o.get('task_id') == key and
+        o.get('operation') in ('spawn', 'send') and o.get('status') in ('intent', 'unknown', 'accepted_unconfirmed')
+        for o in state.get('runtime', {}).get('operations', {}).values())]
+    capacity_refused = any(o.get('task_id') in {key for key, _ in queued} and
+        o.get('operation') == 'spawn' and o.get('status') == 'capacity'
+        for o in state.get('runtime', {}).get('operations', {}).values())
     if running:
         category = "in_progress"
         roles = {t.get("progress", {}).get("role") for _, t in running}
@@ -95,6 +102,11 @@ def task_row(state, task_id, members, observed):
             observation = observed.get(key)
             if not observation or observation["status"] != "running":
                 issues.append("已派发，当前执行状态待核实")
+    elif uncertain:
+        category, stage, next_step = 'uncertain', '已派发，执行状态待核实', '由授权集成者有限观察原执行者；不重复派发'
+        issues.append(stage)
+    elif capacity_refused:
+        category, stage, next_step = 'queued', '原生宿主名额不足，尚未派发', '由集成者核实原生容量；本地准入不保证名额，不自动重派'
     elif queued and (any(key == task_id for key, _ in queued) or
                      root["phase"] not in ("awaiting_integration", "awaiting_merge", "completed")):
         category, stage, next_step = "queued", "排队等待执行资源", "获得执行资源后继续已确认范围"
