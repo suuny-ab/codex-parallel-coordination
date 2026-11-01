@@ -42,7 +42,7 @@ user_required 在完成前使用主会话控制的 `record-acceptance`：scope=c
 最小可运行夹具（无 MR、CI 或直接修改完成字段）：
 
 ```powershell
-python -X utf8 -B -m unittest discover -s scripts -p test_read_only_completion.py -v
+python -X utf8 -B -m unittest discover -s skills/isolated-parallel-development-coordination/scripts -p test_read_only_completion.py -v
 ```
 
 其中 `test_current_cli_entry_finishes_without_direct_ledger_edit` 实际调用 CLI；`test_complete_preserve_canonical_close_and_real_owned_file_cleanup` 走公开入口到真实临时目录清理。所有 native 返回都明确本地夹具，不能代真实宿主验收。报告保留实际命令、原失败和新源码 hash。

@@ -35,4 +35,4 @@ python -B P --state STATE --actor DELIVERY local-cas-merge --token UNIQUE_LOCAL_
 
 Git ref 和 JSON 不是一个跨文件事务。如果 CAS 已发生、账本写入前进程崩溃，保留 reservation，先保全，再 `recover-merge --token TOKEN`：只在实际 main 精确等于该已测 head，且原门禁/证据仍有效时确认完成。其它 ref 变化或证据失效不自动恢复。工具不回退 main。部署从不随 merge 自动执行或授权。
 
-**真实 GitLab 原子门禁未实现/未验证。** 本地 CAS 仅证明本地 ref，不证明 GitLab MR API 能以同样方式比较 target main 与 source/head。需要另行验证 provider 原子条件、保护分支/合并队列或等效服务端门禁，再接入真实合并；不能把 `sha=head` 校验当成同时校验 target 的证明。本次不发真实 GitLab 请求、不合 JLJ。
+**真实 GitLab 原子门禁未实现/未验证。** 本地 CAS 仅证明本地 ref，不证明 GitLab MR API 能以同样方式比较 target main 与 source/head。需要另行验证 provider 原子条件、保护分支/合并队列或等效服务端门禁，再接入真实合并；不能把 `sha=head` 校验当成同时校验 target 的证明。此离线检查不发真实 GitLab 请求，也不授予其它项目合并权。

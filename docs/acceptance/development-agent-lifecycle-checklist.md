@@ -61,7 +61,7 @@
 
 验证命令、最终源码 SHA256、每轮失败/修复/复跑及日志保存在工作树外的 `deliveries/DEV-LIFECYCLE/` 回执。不能将不同组件的通过数相加称为真实宿主验收。交付自测只证明源码行为及明确临时资源的物理变化。
 
-实际任务的已知身份：spec 为本文件配套设计，作者为持久 Codex exec thread `01a1935d-4d37-7cb2-a6fc-69731ae515de`；分支 `codex/agent-lifecycle-20261101`，基线 `main@4fcfe37940f19b06621a78b6298732d8d51f27b0`。PR 的真实 URL/head 由提交和创建成功后的交付回执补齐，不在创建前虚填。没有 native agent ID，不宣称原生完成投递或自动唤醒打通。
+历史任务身份：spec 为本文件配套设计，作者使用持久 Codex exec thread；分支 `codex/agent-lifecycle-20261101`，基线 `main@4fcfe37940f19b06621a78b6298732d8d51f27b0`，公开来源见 [PR #14](https://github.com/suuny-ab/codex-parallel-coordination/pull/14)。个人执行者标识不作公开示例，原始身份及最终 URL/head 保留在当时的外部交付回执；创建前未虚填 PR。没有 native agent ID，不宣称原生完成投递或自动唤醒打通。
 
 本轮不勾选“合并与真实回收完成”。作者、工作树和上下文继续保留，待独立审核、后续合并授权、实际 main 包含核对后，由集成者使用正式控制面保全并回收。生产部署、全局安装和其它项目资源不在此验证范围。
 
@@ -77,4 +77,4 @@
 - main的prepare、launch、routing及观察式派发/收件等十个入口与指定新main源码一致；PR13独有文件保持原字节。本任务没有引入旧adoption补丁或自动唤醒。
 - RESOURCE源码与R1相同，本轮没有重跑64项组件批次；只引用R1精确源码绑定，不报告成R2新通过。新的完整源码清单、测试指纹、同步head和main绑定见 `revision-2/DELIVERY_RECEIPT.json`。
 
-以上仍是作者自测和集成同步，不等于Ramanujan独审通过、远端CI通过、真实作者关闭或实际main交付完成。作者及工作树继续保留。
+以上仍是作者自测和集成同步，不等于非作者独审通过、远端CI通过、真实作者关闭或实际main交付完成。作者及工作树继续保留。
