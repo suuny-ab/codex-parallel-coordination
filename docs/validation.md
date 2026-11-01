@@ -37,6 +37,10 @@ python -X utf8 -B tools/profile.py uninstall --profile C:/explicit-isolated-prof
 
 ## 运行逻辑改动时的回归入口
 
+派工超时修复使用 `python -X utf8 -B tests/run_dispatch_timeout.py --output C:/explicit-evidence/dispatch-timeout --batch focused test_dispatch_timeout test_dispatch_late test_callback_lock_contention test_dispatch_queued_base`。runner 将临时根登记在该证据目录内，使用现有 heavy 互斥，保留命令、源码前后指纹、失败及跳过。`--baseline COMMIT` 只用于所选原函数的隔离红测，另保留 Git 原始源码字节；不切换或修改工作树。
+
+新用例覆盖 Windows 原进程强退、树创建前后、native 前后、真实返回结构夹具的 ID 保留、活跃 CORE 争用、PID 复用、换锁/账本变化和来源拒绝。精确复制的 host 模块配合隔离故障端点及可控45秒时钟验证强退宽限和两个自有锁恢复，不长睡凑时限；夹具没有创建真实 agent。旧现场材料只读比对，缺创建身份的旧锁继续拒绝自动恢复，三项包外历史材料缺失仍按原测试 skip。
+
 轻量收件定向回归：`python -X utf8 -B -m unittest discover -s skills/isolated-parallel-development-coordination/scripts -p test_main_brief.py -v`。覆盖原完整结果对照、焦点/优先级、内部待办、合入与各资源状态、通知未确认恢复、来源变化、Unicode 详情和分页。均使用隔离账本及宿主夹具；真实项目大小/耗时须另取同一冻结输入测量并保留并发变化和范围限制。固定调用及兼容入口见[轻量收件](../skills/isolated-parallel-development-coordination/references/main-brief.md)。
 
 交付接续定向回归：`python -X utf8 -B -m unittest discover -s tests -p test_delivery_continuation.py -v`。CORE launch/cleanup 及保全接点变更另跑 CORE、相关 handoff/Node、dispatch 和 RESOURCE 组合回归；批次按 `tools/heavy.py` 的 `lease()` 互斥。该用例实际执行临时 Git/文件、本地许可、Node/Python、强退和固定恢复入口，native/安装/独审判断仍为夹具。真实任务经获批安装入口另验，不写 live 台账或造任务凑通过。

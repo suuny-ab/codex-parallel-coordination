@@ -15,6 +15,7 @@ const stable = value => JSON.stringify(value, (_, item) => item && typeof item =
 export const HOST_DEADLINE_MS = 45000;
 export const SHUTDOWN_GRACE_MS = 1000;
 export const NODE_CALL_TIMEOUT_MS = 50000;
+export const RECOVERY_DEADLINE_MS = 1000;
 
 export function serializeHostError(error) {
   return {name: error?.name ?? null, message: error?.message ?? String(error),
@@ -24,7 +25,7 @@ export function serializeHostError(error) {
 export class DispatchSession {
   // profile, approvalOrigin and requestMeta are supplied by the trusted host,
   // separately from the task request. Never spread task JSON into this object.
-  constructor({python, profile, request, requestMeta, approvalOrigin, availableTools, testingScope = 'fixture_only', reconcileResult = null, rebaseQueued = false}) {
+  constructor({python, profile, request, requestMeta, approvalOrigin, availableTools, testingScope = 'fixture_only', reconcileResult = null, rebaseQueued = false, recoverOnly = false}) {
     if (typeof rebaseQueued !== 'boolean' || rebaseQueued && reconcileResult) throw new Error('separate finite rebase or reconciliation action required');
     if (!requestMeta?.threadId || !path.isAbsolute(python) || !profile?.integration_target || !request?.sha256) {
       throw new Error('authenticated thread metadata, fixed profile and bound request required');
@@ -51,6 +52,8 @@ export class DispatchSession {
     this.waiter = null;
     this.calls = 0;
     this.closed = false;
+    this.recoverOnly = recoverOnly;
+    this.interrupting = false;
     this.callTimeoutMs = NODE_CALL_TIMEOUT_MS;
     this.exited = new Promise(resolve => { this.resolveExit = resolve; });
     const endpoint = path.toNamespacedPath(fileURLToPath(new URL('./standard_dispatch.py', import.meta.url)));
@@ -62,35 +65,59 @@ export class DispatchSession {
     this.child.stdin.on('error', () => {});
     this.lines = createInterface({input: this.child.stdout});
     this.lines.on('line', line => {
+      if (this.interrupting) return;
       try { this.deliver(JSON.parse(line)); }
       catch { this.deliver({kind: 'result', result: {status: 'needs_reconcile', reason: 'invalid host protocol'}}); }
     });
     this.child.on('error', () => this.deliver({kind: 'result', result: {status: 'blocked', reason: 'Python could not start'}}));
-    this.child.on('exit', code => {
+    this.child.on('close', code => {
       this.resolveExit();
       clearTimeout(this.timer);
       clearTimeout(this.stopTimer);
-      if (!this.closed) this.deliver({kind: 'result', result: {
-        status: 'needs_reconcile', reason: 'finite host process exited before result', exit_code: code,
-      }});
+      if (!this.closed && !this.interrupting) void this.interrupt('finite host process exited before result; exit code ' + code);
     });
     // This is a local deadline, not polling or a wakeup. A killed operation stays
     // intent/unknown in CORE; a subsequent session cannot send it again.
-    this.timer = setTimeout(() => { void this.interrupt('45 second host deadline; observe original intent'); }, HOST_DEADLINE_MS);
+    this.timer = setTimeout(() => { void this.interrupt('45 second host deadline; observe original intent'); },
+      recoverOnly ? RECOVERY_DEADLINE_MS : HOST_DEADLINE_MS);
     this.child.stdin.write(JSON.stringify({protocol: 'standard-dispatch-host/1', profile, request,
       reconcile_result: reconcileResult,
       rebase_queued: rebaseQueued,
+      recover_only: recoverOnly,
       host: {actor_id: requestMeta.threadId, user_origin: approvalOrigin, available_tools: [...this.tools],
         scope: testingScope}}) + '\n');
   }
 
   async interrupt(reason = 'caller interrupted; observe original intent') {
-    const packet = {kind: 'result', result: {status: 'needs_reconcile', reason, automatic_retry: false}};
-    // EOF lets only this owned Python call unwind. Never remove writer locks.
-    this.deliver(packet);
-    this.stopTimer = setTimeout(() => this.child.kill(), SHUTDOWN_GRACE_MS);
+    if (this.interruption) return await this.interruption;
+    if (this.closed) { await this.exited; return; }
+    this.interruption = this.stop(reason);
+    return await this.interruption;
+  }
+
+  async stop(reason) {
+    this.interrupting = true;
+    this.queue = []; // An unconsumed host action expired with this session.
+    clearTimeout(this.timer);
+    const packet = {kind: 'result', result: {status: 'needs_reconcile', reason, automatic_retry: false,
+      next_owner: this.integrationTarget}};
+    this.child.stdin.end();
+    if (this.recoverOnly) this.child.kill();
+    else this.stopTimer = setTimeout(() => this.child.kill(), SHUTDOWN_GRACE_MS);
     await this.exited;
     clearTimeout(this.stopTimer);
+    if (!this.recoverOnly) {
+      // This finite child can only preserve/check the original request's two
+      // lock paths. It cannot create trees, acquire permits or invoke tools.
+      try {
+        const recovery = new DispatchSession({...this.options, recoverOnly: true});
+        packet.result.recovery = (await recovery.next()).result;
+        await recovery.exited;
+      } catch (error) {
+        packet.result.recovery = {status: 'needs_reconcile', reason: String(error), automatic_retry: false};
+      }
+    }
+    this.deliver(packet);
     return packet;
   }
 
@@ -111,15 +138,16 @@ export class DispatchSession {
     const packet = this.queue.length ? this.queue.shift() :
       await new Promise(resolve => { this.waiter = resolve; });
     if (packet.kind === 'host_call') {
-      if (this.options.rebaseQueued || this.pending || !this.tools.has(packet.tool) || ++this.calls > 3 || !this.validAction(packet)) {
-        this.child.kill();
+      if (this.recoverOnly || this.options.rebaseQueued || this.pending || !this.tools.has(packet.tool) || ++this.calls > 3 || !this.validAction(packet)) {
+        await this.interrupt('unexpected or unbounded host action');
         throw new Error('unexpected or unbounded host action; reconcile original intent');
       }
       const requestBytes = await readFile(this.options.request.path);
+      if (this.closed || this.interrupting) throw new Error('host action expired; observe original intent');
       if (createHash('sha256').update(requestBytes).digest('hex') !== this.options.request.sha256 ||
           stable(packet.context?.request_ref) !== stable(this.options.request) ||
           JSON.parse(requestBytes.toString('utf8')).request_id !== packet.context?.request_id) {
-        this.child.stdin.end();
+        await this.interrupt('host packet differs from bound dispatch request');
         throw new Error('host packet differs from bound dispatch request');
       }
       this.pending = JSON.parse(JSON.stringify(packet));
@@ -155,7 +183,7 @@ export class DispatchSession {
       if (tool === 'multi_agent_v1__spawn_agent' && !error) {
         this.spawnedId = evidence.actual_agent_id;
       }
-      if (this.closed) return {kind: 'result', result: {status: 'needs_reconcile',
+      if (this.closed || this.interrupting) return {kind: 'result', result: {status: 'needs_reconcile',
         request_id: evidence.request_id, actual_agent_id: evidence.actual_agent_id,
         host_result: {path: evidence.path, sha256: evidence.sha256},
         next_action: 'verifyHostResult(nodeRepl.requestMeta)', automatic_retry: false}};

@@ -939,21 +939,24 @@ def migrate(old, project_id, source_ref):
 
 @contextmanager
 def writer_lock(path):
+    from dispatch_lock import lock_metadata, release_owned
     path = Path(path)
     require(path.is_absolute(), "state path must be absolute")
     path.parent.mkdir(parents=True, exist_ok=True)
     lock = path.with_suffix(path.suffix + ".lock")
+    original = json.dumps(lock_metadata(path)).encode()
     try:
         fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except FileExistsError:
         raise ValueError("writer lock exists; inspect owner/preserve state; never auto-steal: " + str(lock))
+    file_id = os.fstat(fd).st_ino
     try:
-        os.write(fd, json.dumps({"pid": os.getpid(), "state": str(path)}).encode())
+        os.write(fd, original)
         os.fsync(fd)
         yield
     finally:
         os.close(fd)
-        lock.unlink()
+        release_owned(lock, original, file_id)
 
 
 def main():

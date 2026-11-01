@@ -285,10 +285,23 @@ class StandardDispatch:
                 # it does not re-run preflight as if this were an unowned task.
                 if old.get('launch_started'):
                     locks.close()
+                    intent = self.bridge.evidence / ('host-' + fingerprint([identity, 'multi_agent_v1__spawn_agent', 'intent']) + '.json')
+                    if identity + ':launch' not in operations and old.get('status') == 'launch_pending' and not intent.exists() and not old.get('retained_host_results'):
+                        # CORE persists its own launch intent before any native call.
+                        # A driver exit in this gap can continue that same attempt.
+                        route = state['runtime']['intake']['routes'][identity + ':route']
+                        self.runtime.launch(task_id, self.developer, attempt_id=identity + ':launch',
+                            admission=old['admission']['admission'], authorized=True, message=route['message'],
+                            spawn=True, route_id=identity + ':route')
                     return self._finish(request, old)
             require(not any(o.get('operation') == 'standard-dispatch' and o.get('task_id') == task_id and
                             key != identity for key, o in operations.items()), 'task already has a dispatch request')
+            # Git/network waits must not hold this project's shared driver lock.
+            locks.close()
             item, commands, rights = self._preflight(request, old)
+            locks.enter_context(writer_lock(self.runtime.directory / 'standard-dispatch-driver'))
+            require(self.runtime._load()['revision'] == state['revision'],
+                    'dispatch state changed during preflight; recheck original request')
             if not old:
                 self._record(identity, operation='standard-dispatch', task_id=task_id,
                              request_digest=fingerprint(request), status='preparing')
@@ -325,12 +338,18 @@ class StandardDispatch:
                                for e in self.git._entries())
                 self._record(identity, worktree_intent=dict(path=request['worktree'], branch=request['branch'], base=base_main))
                 if not reserved:
+                    expected_revision = self.runtime._load()['revision']
+                    locks.close()
                     try:
                         self.git.create(dict(path=request['worktree'], metadata=dict(repository_root=str(self.git.repository))),
                                         request['branch'], base_main)
                     except (subprocess.SubprocessError, OSError) as error:
+                        locks.enter_context(writer_lock(self.runtime.directory / 'standard-dispatch-driver'))
                         self._record(identity, status='worktree_unknown', error_type=type(error).__name__)
                         return self.status(identity)
+                    locks.enter_context(writer_lock(self.runtime.directory / 'standard-dispatch-driver'))
+                    require(self.runtime._load()['revision'] == expected_revision,
+                            'dispatch state changed during tree creation; observe original tree')
             entries = [e for e in self.git._entries() if Path(e['worktree']).resolve() == Path(request['worktree']).resolve()]
             require(len(entries) == 1 and entries[0].get('branch') == 'refs/heads/' + request['branch'] and
                     entries[0]['HEAD'] == base_main, 'worktree intent needs observation; never blindly recreate')

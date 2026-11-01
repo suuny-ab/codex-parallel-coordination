@@ -1,10 +1,14 @@
 """Private finite stdio endpoint for dispatch_host.mjs; not a JSON authority CLI."""
 import json
+import os
 from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(ROOT / 'src'))
+scripts = str(Path(__file__).resolve().parent)
+if os.name == 'nt' and not scripts.startswith('\\\\?\\'):
+    scripts = '\\\\?\\' + scripts
+sys.path[:0] = [scripts, str(ROOT / 'src')]
 from core_runtime import Runtime
 from evidence import fingerprint, load_bound, ref, require, write_atomic
 from host_adapter import HostAdapter, HostCallError
@@ -12,6 +16,7 @@ from codex_parallel_coordination.bridge import ResourceBridge
 from codex_parallel_coordination.dispatch import StandardDispatch, approved_request
 from codex_parallel_coordination.resources import ArtifactCleanup, Controller
 from codex_parallel_coordination.worktrees import GitWorktrees
+from dispatch_lock import dispatch_binding, dispatch_scope
 
 NATIVE_TRANSPORT = {'spawn_agent': 'multi_agent_v1__spawn_agent',
                     'wait_agent': 'multi_agent_v1__wait_agent'}
@@ -19,6 +24,19 @@ NATIVE_TRANSPORT = {'spawn_agent': 'multi_agent_v1__spawn_agent',
 
 def emit(value):
     print(json.dumps(value, ensure_ascii=False), flush=True)
+
+
+def execute(bootstrap, profile, host, request, runtime):
+    binding = dispatch_binding(runtime, request, host['actor_id'], bootstrap['request'])
+    locks = [ref(p) for p in (runtime.path.with_suffix('.json.lock'),
+        runtime.directory/'standard-dispatch-driver.lock') if p.exists()]
+    recovered = runtime.recover_call_locks(locks, profile['evidence_root'], host['actor_id'],
+        request_ref=bootstrap['request'], dispatch_evidence_root=profile['evidence_root'])['locks'] if locks else []
+    if bootstrap.get('recover_only'):
+        return emit(dict(kind='result', result=dict(status='needs_reconcile', lock_recovery=recovered,
+            request_id=request['request_id'], automatic_retry=False, next_owner=profile['integration_target'])))
+    with dispatch_scope(binding, profile['evidence_root']):
+        return run_dispatch(bootstrap, profile, host, request, runtime, recovered)
 
 
 def main():
@@ -31,6 +49,19 @@ def main():
         request = approved_request(request)
     runtime = Runtime(profile['state_root'], profile['project_root'])
     runtime._actor(runtime._load(), host['actor_id'], control=True)
+    try:
+        execute(bootstrap, profile, host, request, runtime)
+    except (ValueError, KeyError, OSError) as error:
+        old = runtime._load()['runtime']['operations'].get(request['request_id'])
+        if not old or old.get('request_digest') != fingerprint(request):
+            raise
+        retained = bootstrap.get('reconcile_result')
+        emit(dict(kind='result', result=dict(status='needs_reconcile', request_id=request['request_id'],
+            reason=str(error), host_result=retained, next_owner=profile['integration_target'], automatic_retry=False,
+            identity_binding_verified=False, actual_native_dispatch_verified=False)))
+
+
+def run_dispatch(bootstrap, profile, host, request, runtime, recovered):
     tools = host['available_tools']
     receipts = []
     evidence = Path(profile['evidence_root'])
@@ -90,7 +121,7 @@ def main():
             result.update(host_result=bootstrap['reconcile_result'], reported_actual_agent_id=retained.get('actual_agent_id'),
                 identity_binding_verified=False, next_action='Inspect existing intent/lock owner; do not steal locks or resend',
                 next_owner=profile['integration_target'])
-    emit(dict(kind='result', result=dict(result, host_evidence=receipts)))
+    emit(dict(kind='result', result=dict(result, host_evidence=receipts, lock_recovery=recovered)))
 
 
 if __name__ == '__main__':

@@ -44,7 +44,7 @@ while (packet.kind === 'host_call') {
     multi_agent_v1__wait_agent:{status:{'synthetic-stdio-agent':'running'},timed_out:true}, send_input:{submission_id:'fixture'}};
   packet = await session.reply(packet.tool, replies[packet.tool]);
 }
-console.log(JSON.stringify({packet, calls, argumentsUsed}));
+console.log(JSON.stringify({packet, calls, argumentsUsed, stderr:session.stderr}));
 """.replace('MODULE', json.dumps(module))
         result = subprocess.run(['node', '--input-type=module', '-e', program, config['path']],
                                 capture_output=True, encoding='utf-8', timeout=55)

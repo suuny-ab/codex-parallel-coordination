@@ -457,10 +457,11 @@ class Runtime:
         from delivery_continuation import run
         return run(self, request_ref, actor_id, **options)
 
-    def recover_call_locks(self, references, destination, actor_id, *, request_ref=None):
+    def recover_call_locks(self, references, destination, actor_id, *, request_ref=None, dispatch_evidence_root=None):
         """Explicit main-only recovery of preserved, confirmed-dead call locks."""
         from call_recovery import recover
-        return recover(self, references, destination, actor_id, request_ref=request_ref)
+        return recover(self, references, destination, actor_id, request_ref=request_ref,
+                       dispatch_evidence_root=dispatch_evidence_root)
 
     def feedback(self, command, actor_id, *, verify_display=None):
         """Record notification transport/display facts, never permissions or acceptance."""

@@ -39,7 +39,7 @@ Python 子进程不能直接调用当前 agent 的 native 工具。`scripts/disp
 
 1. 在 `node_repl` 导入受信插件内的 `DispatchSession`，传入固定 profile、明确 Python 绝对路径、绑定请求和 **`nodeRepl.requestMeta`**。actor 使用实际 `threadId`，不使用可能属于父会话的 `sessionId`。`approvalOrigin` 是主会话核对直接用户批准后给出的受信 sideband `{role:'user',conversation_id:实际主会话,reference:原批准ref}`，不能从请求文件自取。
 2. Python 先完成准入核验，再输出一次 host_call；functions 宿主只调用真实暴露的工具并返回未经伪造的原始结果。下面的通用驱动可反复使用，不生成逐任务 Python 脚本。
-3. 最多执行 spawn、observe、integration-send 三个 host_call，宿主会话45秒截止。截止时关闭输入，给当前子进程至多1秒释放其写锁再结束；没有常驻服务、后台队列、自动唤醒或自动重发。
+3. 最多执行 spawn、observe、integration-send 三个 host_call，宿主会话45秒截止。截止时关闭输入，给当前子进程至多1秒退出宽限；必要时仅结束本会话子进程，再用至多1秒的只恢复子进程核对原请求自有锁。结果保留恢复证据或明确拒绝；没有常驻服务、后台队列、自动唤醒或自动重发。
 
 初始化示例（参数由受信主会话提供，省略项目特定值）：
 
@@ -59,7 +59,7 @@ var dispatchSession = new DispatchSession({
 nodeRepl.write(JSON.stringify(await dispatchSession.next()));
 ```
 
-上面初始化以及下方每次 `next/reply/verifyHostResult/interrupt` 的外层 Node 工具调用均显式使用 `timeout_ms: 50000`（模块 `NODE_CALL_TIMEOUT_MS` / `session.callTimeoutMs`）。它覆盖45秒会话截止、1秒子进程退出宽限及返回余量；不要用20秒或默认30秒调用等待这个会话。主动取消时显式 `await dispatchSession.interrupt()`，仅向本会话子进程送 EOF、等有界退出；硬 kernel reset 无法保证 finally 执行，遗留锁仍由集成者核原 owner，不自动抢锁。
+上面初始化以及下方每次 `next/reply/verifyHostResult/interrupt` 的外层 Node 工具调用均显式使用 `timeout_ms: 50000`（模块 `NODE_CALL_TIMEOUT_MS` / `session.callTimeoutMs`）。它覆盖45秒会话截止、1秒子进程退出宽限、1秒锁恢复及返回余量；不要用20秒或默认30秒调用等待这个会话。主动取消时显式 `await dispatchSession.interrupt()`。硬 kernel reset 无法保证 finally 执行；下一次原请求通过同一入口先核对固定项目的原自有锁，不能抢占来源不足或仍活跃的 owner。
 
 安装 binding 是集成者独审、安装核对后给受信宿主的 `source_root/source_head/files`，其中 files 是已审全源码的相对路径到 SHA256 映射。`dispatch_entry.mjs` 核对自身所在安装根、每个真实文件及指纹后才加载同一安装内的 host 模块；不回退到作者工作树。binding 不能来自任务 JSON，复制测试也不代表正式安装完成。
 
@@ -108,6 +108,10 @@ raw host intent/result 和准入、交接回执保存于 profile 的永久外部
 
 `reply` 对匹配的 pending packet **先持久化原始结果**，再判断会话是否截止或子进程是否退出。原子外部 journal 绑定原请求、任务/项目、操作、工具/实参、原始返回和已知实际 agent ID；相同迟到结果复用原文件，冲突结果拒绝覆盖。正常回复也先落同样证据，才继续 Python。截止或退出后只返回 `needs_reconcile`、结果指纹及核证入口，不续派、不重发，不据迟到观察宣称 running 或交接完成。
 
-原受信 caller 可显式调用 `await dispatchSession.verifyHostResult(nodeRepl.requestMeta)`：使用已保留请求/结果，等当前子进程退出后，通过 `StandardDispatch.reconcile_host_result` 核对原 canonical intent。当前未知 spawn 的真实 ID 经原 `bind_executor/register_resource` 入口保留归属，仍保持 `needs_reconcile` 和执行未知；核证不调用任何 native 工具。同一请求再次 run 也不续派。若子进程被强杀留下原写锁，保留 journal 和实际 ID，明确由集成者核对原锁 owner；不自动抢锁、删锁或修复历史资源。原对象不可用时，受信 host 用同一 profile/request 加 `reconcileResult: 返回的host_result指纹` 创建有限核证会话，不重新填写任务材料。
+原受信 caller 可显式调用 `await dispatchSession.verifyHostResult(nodeRepl.requestMeta)`：使用已保留请求/结果，等当前子进程退出后，通过 `StandardDispatch.reconcile_host_result` 核对原 canonical intent。当前未知 spawn 的真实 ID 经原 `bind_executor/register_resource` 入口保留归属，仍保持 `needs_reconcile` 和执行未知；核证不调用任何 native 工具。同一请求再次 run 也不续派。原对象不可用时，受信 host 用同一 profile/request 加 `reconcileResult: 返回的host_result指纹` 创建有限核证会话，不重新填写任务材料。
+
+每次有限入口先通过现有 `Runtime.recover_call_locks` 检查本项目固定的 ledger/driver 两个锁路径；仅额外转发受信 profile 的 `dispatch_evidence_root`，内部复用 `recover_dispatch_locks` 核验。新派工的锁引用外部 owner journal，绑定原 project/task/request digest、受信 actor、PID 和进程创建时间；先保全原锁字节、当前账本指纹和进程观察，再双检死亡、进程身份、账本字节及锁文件身份。Windows 使用禁止并发写入/替换的删除句柄，只释放核对过的文件，并留下恢复回执。正常 finally 也只释放自己创建的锁，不删除替换者。Git 预检和创建树的等待释放共享 driver 锁，重新进入时核对 revision。旧派工恢复不能绕过创建身份门槛；原 delivery-continuation 保全恢复分支保持其既有边界。
+
+活跃写者、PID复用、错请求/项目/任务、未知进程、并发换锁/账本变化、旧锁缺少创建身份或来源均拒绝，保留原结果及集成者责任。自动死锁恢复目前限 Windows；其它平台保留拒绝，不以 PID 不存在猜测身份。树意图已存在但树结果未知时只观察原路径，不重建；CORE 的原 launch intent 一旦存在便不重复 native 调用。没有 CORE launch intent、没有 host intent 且仍为原 launch_pending 的明确间隙才可继续原 attempt。RESOURCE 许可保持原样，不申请或释放另一许可；后续观察和交付继续 handoff/work-cycle。
 
 验证分开报告：真实 Git/RESOURCE 与 stdio 桥接、synthetic native fixtures、当前宿主可用能力、真实新任务派发。最终一项只有合入并按独立授权更新本机后，以另行获批的新开发需求验证；不得为验工具自造任务。
