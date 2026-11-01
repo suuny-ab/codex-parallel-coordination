@@ -126,7 +126,7 @@ RESOURCE 文件联接示例：invoke 收到的 resource 已含 CORE 生成的 cl
 
 按需调用 bridge.create_temporary 创建并登记 environment/database/artifact，bridge.run_process 复用 RESOURCE 的有限 Job/PID 创建和整树退出证据；没有实际 PID 的排队请求不冒充已运行。后续资源同样专属于原需求，不建立新任务队列。详细 API、外部保全和真实宿主边界见插件 docs/resource/closed-loop.md。
 
-合入核验后由当前唯一交付者调用 `preserve_task(task_id, new_external_directory, handoff_ref, actor, scope=..., extra=[...])`。保全准确的交付/审核/合入引用图、当前修订及必要材料到回收范围外，随后沿用 reclaim_development。原报告路径和字节不改。report_for 只有在同任务 worktree 确认清理及保全绑定仍有效时读取已保全源清单；缺失证据必须有已确认清理归属和同 hash 副本。源/证据存在但改字节、非正常丢失、保全损坏均拒绝。原始 artifact/load_bound 审阅可用 evidence.preserved_read(state, task_id) 的有限上下文。
+合入核验后由当前唯一交付者调用 `preserve_task(task_id, new_external_directory, handoff_ref, actor, scope=..., extra=[...], remote_verification=...)`。保全准确的交付/审核/合入引用图、当前修订及必要非 Git 材料到回收范围外，随后沿用 reclaim_development，不逐任务全量备份 Git 代码。原报告路径和字节不改。完成且绑定真实云端核验的 report_for 使用已测提交及持久材料，不依赖临时路径当前存在或目录清理成功；开发审核期间仍核实际源/测试绑定。保全损坏或当前事实绑定变化仍拒绝。仅 fixture 的旧保全路径仍要求已确认清理，不能冒充真实云端完成。原始 artifact/load_bound 审阅可用 evidence.preserved_read(state, task_id) 的有限上下文。
 
 本入口不扫描、迁移、补登记历史任务，不重写旧完成状态，不增加原 main/交付者角色或 Git/清理权限。缺能力或未知仍归当前集成者处理；fixture 成功不代表 live 账本接线或 native 关闭可用。
 
