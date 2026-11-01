@@ -12,10 +12,20 @@ const allowed = new Set([...native, ...handoff]);
 const stable = value => JSON.stringify(value, (_, item) => item && typeof item === 'object' && !Array.isArray(item) ?
   Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
 
+export const HOST_DEADLINE_MS = 45000;
+export const SHUTDOWN_GRACE_MS = 1000;
+export const NODE_CALL_TIMEOUT_MS = 50000;
+
+export function serializeHostError(error) {
+  return {name: error?.name ?? null, message: error?.message ?? String(error),
+    code: error?.code ?? null, string: String(error)};
+}
+
 export class DispatchSession {
   // profile, approvalOrigin and requestMeta are supplied by the trusted host,
   // separately from the task request. Never spread task JSON into this object.
-  constructor({python, profile, request, requestMeta, approvalOrigin, availableTools, testingScope = 'fixture_only', reconcileResult = null}) {
+  constructor({python, profile, request, requestMeta, approvalOrigin, availableTools, testingScope = 'fixture_only', reconcileResult = null, rebaseQueued = false}) {
+    if (typeof rebaseQueued !== 'boolean' || rebaseQueued && reconcileResult) throw new Error('separate finite rebase or reconciliation action required');
     if (!requestMeta?.threadId || !path.isAbsolute(python) || !profile?.integration_target || !request?.sha256) {
       throw new Error('authenticated thread metadata, fixed profile and bound request required');
     }
@@ -26,7 +36,7 @@ export class DispatchSession {
     }
     if (!['fixture_only', 'host_verified'].includes(testingScope)) throw new Error('explicit testing boundary required');
     this.tools = new Set(availableTools.filter(name => allowed.has(name)));
-    this.options = {python, profile: {...profile}, request: {...request}, requestMeta, approvalOrigin, availableTools, testingScope};
+    this.options = {python, profile: {...profile}, request: {...request}, requestMeta, approvalOrigin, availableTools, testingScope, rebaseQueued};
     this.actorId = requestMeta.threadId;
     this.evidenceRoot = profile.evidence_root;
     this.resultRefs = [];
@@ -41,6 +51,7 @@ export class DispatchSession {
     this.waiter = null;
     this.calls = 0;
     this.closed = false;
+    this.callTimeoutMs = NODE_CALL_TIMEOUT_MS;
     this.exited = new Promise(resolve => { this.resolveExit = resolve; });
     const endpoint = fileURLToPath(new URL('./standard_dispatch.py', import.meta.url));
     this.child = spawn(python, ['-X', 'utf8', '-B', endpoint], {
@@ -65,16 +76,22 @@ export class DispatchSession {
     });
     // This is a local deadline, not polling or a wakeup. A killed operation stays
     // intent/unknown in CORE; a subsequent session cannot send it again.
-    this.timer = setTimeout(() => {
-      this.deliver({kind: 'result', result: {status: 'needs_reconcile', reason: '45 second host deadline; observe original intent'}});
-      // EOF lets this owned Python call unwind its writer locks. The deadline
-      // still closes the host session; a short grace bounds child shutdown.
-      this.stopTimer = setTimeout(() => this.child.kill(), 1000);
-    }, 45000);
+    this.timer = setTimeout(() => { void this.interrupt('45 second host deadline; observe original intent'); }, HOST_DEADLINE_MS);
     this.child.stdin.write(JSON.stringify({protocol: 'standard-dispatch-host/1', profile, request,
       reconcile_result: reconcileResult,
+      rebase_queued: rebaseQueued,
       host: {actor_id: requestMeta.threadId, user_origin: approvalOrigin, available_tools: [...this.tools],
         scope: testingScope}}) + '\n');
+  }
+
+  async interrupt(reason = 'caller interrupted; observe original intent') {
+    const packet = {kind: 'result', result: {status: 'needs_reconcile', reason, automatic_retry: false}};
+    // EOF lets only this owned Python call unwind. Never remove writer locks.
+    this.deliver(packet);
+    this.stopTimer = setTimeout(() => this.child.kill(), SHUTDOWN_GRACE_MS);
+    await this.exited;
+    clearTimeout(this.stopTimer);
+    return packet;
   }
 
   deliver(packet) {
@@ -94,7 +111,7 @@ export class DispatchSession {
     const packet = this.queue.length ? this.queue.shift() :
       await new Promise(resolve => { this.waiter = resolve; });
     if (packet.kind === 'host_call') {
-      if (this.pending || !this.tools.has(packet.tool) || ++this.calls > 3 || !this.validAction(packet)) {
+      if (this.options.rebaseQueued || this.pending || !this.tools.has(packet.tool) || ++this.calls > 3 || !this.validAction(packet)) {
         this.child.kill();
         throw new Error('unexpected or unbounded host action; reconcile original intent');
       }

@@ -37,6 +37,8 @@ python -X utf8 -B tools/profile.py uninstall --profile C:/explicit-isolated-prof
 
 ## 运行逻辑改动时的回归入口
 
+任务交接修复的定向回归为 `python -X utf8 -B -m unittest discover -s tests -p test_handoff_faults.py -v`、`-p test_task_handoff.py` 及 `-p test_dispatch_queued_base.py`，另运行既有 dispatch/host/late、CORE 和组合检查。新增用例验证实际 Node/Python EOF退出及原锁释放、容量拒绝/unknown、原身份观察、报告门禁及重复/迟到恢复；纯排队重基线使用专属临时 Git/RESOURCE，覆盖原字节/身份不变、祖先/远端/归属拒绝、无 host 调用及追加时 revision 竞争；native 回复仍是 fixture。实际 host 的有限观察与最终收件需使用已获授权的既有任务，由受信宿主及集成者另核，不为验证另造任务或重复 spawn。
+
 ```powershell
 python -X utf8 -B -m unittest discover -s tests -p test_*.py -v
 python -X utf8 -B skills/isolated-parallel-development-coordination/scripts/run_core_tests.py --test-root C:/explicit-tests/core --evidence-root C:/explicit-evidence/core
