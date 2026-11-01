@@ -60,6 +60,8 @@ print(result['text'])
 
 `user_item` 为至多一项已就绪人事项，优先保留 active；否则沿原优先级/FIFO。`delivered_to_user=false`，计算摘要不会 next/wait/accept；主会话实际呈现后沿现有入口登记，回答后用 resolve-next。失效的 active 仍留 human_focus，但不把失效验收递给用户。`next_action.kind` 为 needs_user、needs_delivery、waiting 或 no_pending_work；owner 指向主会话或当前授权集成者，无集成身份时明确待核实，技术缺口不自动变用户审批。
 
+`notifications` 是独立的只读阶段/资源通路，不进入用户事项池，也不受 active 阻塞。收到即展示，不等空闲或回复；有未展示变化时 `display_required=true/allow_end=false`。通知、发送 intent/accepted 和受信主会话可见发布分开登记，见[阶段反馈](stage-feedback.md)。`Runtime.feedback` / CLI `feedback INPUT --actor ACTUAL_ID` 只记这些事实，不改权限或生命周期；真实展示确认须 Python 入口的受信宿主回调，不能用 CLI JSON 自证。
+
 `progress.tasks` 复用原业务任务归属和阶段，每行附 development（实现/自测）、delivery（审核/集成/合入）及 cleanup。代码完成但 pending_cleanup、历史完成却缺清理记录，均不返回 all_work_finished=true；原 summary.action=idle 保留原机器语义。清理只展示，仍走原生命周期门禁及独立授权。`text` 是供主会话直接使用的简短进度，技术引用留在结构化字段。整批代码完成通知限定 scope=development_delivery，额外列 cleanup_pending/all_work_finished，不能据此宣称所有收尾完成。
 
 ```python

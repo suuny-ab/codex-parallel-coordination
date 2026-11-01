@@ -18,9 +18,10 @@
 ## 更新发布与收尾
 
 - 仅在独立明确授权内备份、更新本机、tag、部署或发布核验。冻结 SHA/制品/任务范围/顺序，后续 main 新 PR 不自动入发布；源、备份、活动新建和数据保留关口必须对应同一实际环境及已测版本。查[冻结发布契约](../delivery-delegation.md#冻结发布)。
-- 已有账本每次开始/技术收尾运行 [`Runtime.work_cycle` / CLI `work-cycle`](../core-runtime.md#一轮工作入口)，提交当前 observation 或调用一次受信 collect 回调，复用原 closeout/reconcile：消费已收终态/报告，核 blocked 后续责任及双向通路，再以同 revision 检查。旧证据或未消费回执不能用进度掩盖；单独 check 不证明 inbox 完整。常规技术 `notify_main=null`，仅一件用户事项、整批完成或重要例外交主会话，不让其循环 wait/查日志。
+- 已有账本每次开始/技术收尾运行 [`Runtime.work_cycle` / CLI `work-cycle`](../core-runtime.md#一轮工作入口)，提交当前 observation 或调用一次受信 collect 回调，复用原 closeout/reconcile：消费已收终态/报告，核 blocked 后续责任及双向通路，再以同 revision 检查。旧证据或未消费回执不能用进度掩盖；单独 check 不证明 inbox 完整。普通技术回执内部处理；已核开发交付、独审、合入、安装/实际验证及重要阻塞沿[独立通知通路](../stage-feedback.md)及时转原主会话，不等 active 用户事项结束，不让主会话循环 wait/查日志。
 - 没有 global delivery 而有真实派发绑定时，只用原批准的任务收件身份及范围；可用 `task_ids=[...]` / 重复 `--task TASK` 限定已授权任务。它不授新权限，不与全局委托混用，不消费其它任务缓冲。主会话只读；缺观察/采集能力保留最后登记并明确下一责任，不把局部覆盖报全局。开发/交付完成与 cleanup_pending/all_work_finished 分开，统一入口不执行清理。
 - 合法完成后，按[保全及回收共同关口](../current-rules.md#完成保全与回收)先外部保全再处理登记的专属资源。调用接口时读[CORE 完成与清理](../core-runtime.md#完成与清理)，资源桥接再读[RESOURCE API](../../../../docs/resource/API.md)。缺 close 能力或结果未知保留 pending_cleanup；组件不替你清理真实资源，不把“已请求关闭”写成已释放。
+- 合入与回收分别反馈，回收按登记资源说明待清理/部分/全部/失败/未知、已处理项、剩余原因及技术责任。不从 completed、idle、not_found 或目录缺失推断关闭/名额/RAM，不要求已关闭开发者另发回执。发送前登记 intent，accepted/unknown 保留待确认；只有主会话实际可见发布后才由受信宿主确认展示。
 
 主会话依据同账本摘要处理用户事项。新交付/证据变化必须对账，过期状态只报最后登记事实；原始报告、历史授权及失败记录不覆盖。
 

@@ -133,9 +133,16 @@ def project(state, *, current=False, reconciled=None, receiver_scope=None):
     if notification and notification['kind'] == 'batch_complete':
         notification.update(scope='development_delivery', cleanup_pending=cleanup_pending,
                             all_work_finished=action['kind']=='no_pending_work')
+    from stage_feedback import pending
+    notifications = pending(state)
+    if notifications['display_required']:
+        text = notifications['text'] + '\n' + text
     return dict(schema='coordination-work-cycle/1', revision=state['revision'], summary=summary(state),
         user_item=visible or None, human_focus=state['active_human_item'], delivered_to_user=False,
-        next_action=action, progress=progress, text=text, all_work_finished=action['kind']=='no_pending_work',
+        next_action=action, progress=progress, text=text,
+        notifications=notifications, display_required=notifications['display_required'],
+        allow_end=check['allow_end'] and not notifications['display_required'],
+        all_work_finished=action['kind']=='no_pending_work' and not notifications['display_required'],
         observation=dict(current=current, verified=verified,
             scope=check.get('scope', 'ledger_only') if current else 'last_recorded',
             source=audit.get('observation'), inbox_mode=audit.get('mode'),

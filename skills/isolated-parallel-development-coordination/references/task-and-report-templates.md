@@ -24,6 +24,10 @@
 
 运行 `pack SPEC --output IMMUTABLE_REPORT` 自动枚举完整源码和证据 hash，绑定 self_test.source_digest。Git 根枚举所有 tracked 和 nonignored untracked 文件、删除标记；ignored 必需资产/输入放 extra_sources。非 Git 根枚举所有文件；报告、日志、ledger 放源码根外，避免生成后指纹自变。符号链接和 submodule 暂不支持。pack 拒绝覆盖报告，不运行测试；worker 先真实执行测试，再 pack 并复核 source/evidence。测试覆盖完整性和报告真实性仍需审核。
 
+Windows 长路径保持现有 reader 的普通路径清单格式：Git 中普通路径不可见的项仍可为 null，目录模式不可见的项仍可不出现在 files；真实存在的字节自动以绝对路径/SHA-256 加入 source.extra，且每次复核实际文件。实际枚举使用扩展路径及命令级 Git longpaths，不改全局设置。这样新报告可由旧 reader 读取，新 reader 同时核对旧的“null/遗漏 + 实际 SHA 补充”和完整 SHA 清单；没有实际补充的盲区不能通过。普通文件、补充文件的改动以及普通/长路径新增删除均重新校验，不改原报告或账本。
+
+向仍使用旧 reader 的宿主交付时，直接使用此处的 canonical pack 报告，保留 source.extra。旧 development-delivery/2 导入器会重新生成 source，不能假定它保留新报告的实际补充；不要通过修改旧报告、source digest 或 live 账本来弥补。独审/quality 继续绑定本次完整 source 对象的 digest；独立完整文件清单可另作为外部证据保留，不能把 null 当成已核字节。
+
 URL 入口用 entry.kind=url、target=http(s) 及 probe_evidence artifact（绝对 path/hash）；工具不联网证明 URL 现在存活。没有可运行环境时说明限制，不造验收就绪。self_test 与 quality_review 独立；quality pending 不得写 self_test failed，局部通过按实际范围记录且不会放行整体验收。
 
 收件 CLI 能自动构造简单完成 envelope；受阻带决策、native ID 或技术核证时保存完整 receive 对象再 apply，见状态协议。相同交付重放不得重造 event_id/revision/字段以躲开去重。
