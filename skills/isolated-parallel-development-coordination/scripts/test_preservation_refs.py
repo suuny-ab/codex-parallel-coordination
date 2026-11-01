@@ -100,7 +100,7 @@ class PreservationRefs(core_tests.CoreFixture):
         self.assertEqual(sum(call.args[0]==leaf for call in read.call_args_list), 1)
         self.assertEqual(sum(row['original']==leaf for row in manifest['files']), 1)
 
-    def test_captured_state_is_data_but_adjacent_evidence_is_still_followed(self):
+    def test_captured_state_requires_trusted_external_classification(self):
         captured = new_state('fixture-main', 'fixture-project')
         captured['tasks']['A'] = dict(integration=dict(report=dict(
             path=str(self.root/'expired-fixture-integration.json'),sha256='0'*64)))
@@ -114,7 +114,10 @@ class PreservationRefs(core_tests.CoreFixture):
             source=dict(root=str(self.tree),kind='git',files=[missing_context],extra=[],digest='captured'),
             stored=dict(schema='dispatch-host-result/1',pending_packet=dict(request_ref=missing_context))))
         leaf = self.file('actual-evidence.txt')
-        manifest = load_bound(self.preserve(dict(evidence=[trace, leaf])))
+        with self.assertRaisesRegex(ValueError, 'artifact missing'):
+            self.preserve(dict(evidence=[trace, leaf]), self.root/'unclassified')
+        self.classification_fixture([trace, captured_request])
+        manifest = load_bound(self.preserve(dict(evidence=[trace, captured_request, leaf])))
         self.assertTrue(any(row['original']==trace for row in manifest['files']))
         self.assertTrue(any(row['original']==leaf for row in manifest['files']))
         captured_copy = next(row for row in manifest['files'] if row['original']==captured_request)
@@ -155,6 +158,12 @@ class PreservationRefs(core_tests.CoreFixture):
         inventory = dict(root=str(Path.cwd()),kind='git',files=[dict(relative='feature.py',sha256='0'*64)],
                          extra=[invalid],digest='captured')
         with self.assertRaisesRegex(ValueError, 'artifact missing or not absolute'):
+            self.preserve(dict(source=inventory))
+
+    def test_source_inventory_shape_cannot_hide_adjacent_required_evidence(self):
+        missing = dict(path=str(self.root/'missing'),sha256='0'*64)
+        inventory = dict(root=str(self.root), kind='git', files=[], extra=[], digest='self-labelled', evidence=[missing])
+        with self.assertRaisesRegex(ValueError, 'artifact missing'):
             self.preserve(dict(source=inventory))
 
     def test_root_reference_manifest_and_root_relative_inventory_are_distinct(self):

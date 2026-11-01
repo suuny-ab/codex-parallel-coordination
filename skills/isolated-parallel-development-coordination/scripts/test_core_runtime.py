@@ -14,6 +14,29 @@ from test_delivery import DeliveryFixture
 
 
 class CoreFixture(LedgerFixture):
+    def classification_fixture_setup(self):
+        """Disposable original dispatch only; no live authority."""
+        state = self.runtime._load(); task = state['tasks']['A']
+        if not task.get('resource_authority'):
+            approval = self.json('original-task-approval.json', dict(schema='approved-dispatch-plan/1',
+                approval='approved', source='direct user message in original main conversation',
+                main_conversation=self.actor, integration_agent='delivery-worker', user_quote='Fixture preservation authority',
+                authorized=['preserve_and_reclaim_task_owned_resources_after_completion'],
+                tasks=[dict(id='A', worktree=task['worktree'], branch=task['branch'])]))
+            task['resource_authority'] = approval
+            task['requirements']['user_reference'] = approval['path']
+            write_atomic(self.runtime.path, state)
+
+    def classification_fixture(self, originals, actor=None, **changes):
+        from preservation_contract import binding
+        self.classification_fixture_setup()
+        value = dict(schema='preservation-classification/1', **binding(self.runtime._load(), 'A'),
+            captures=[dict(original=item, contract='frozen-test-result/1', reason='Disposable test run capture')
+                      for item in originals])
+        value.update(changes)
+        declaration = self.json('classification-declaration.json', value)
+        return self.runtime.classify_preservation('A', declaration, actor or self.actor, authorized=True)
+
     def setUp(self):
         super().setUp()
         project=self.root/'project';project.mkdir()

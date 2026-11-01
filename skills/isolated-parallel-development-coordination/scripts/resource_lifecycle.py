@@ -2,20 +2,20 @@
 from copy import deepcopy
 from pathlib import Path
 
-from coordination import SCHEMA, writer_lock
+from coordination import writer_lock
 from evidence import artifact, fingerprint, historical_git_artifact, io_path, load_bound, ref, report_for, require, write_atomic
 
 
 # Only declared contract slots carry references; path/hash-shaped JSON elsewhere
 # is data. Lists in these slots retain the same reference requirement.
-REFERENCE_FIELDS = {'evidence', 'report', 'delivery', 'proof', 'authority', 'observation',
+REFERENCE_FIELDS = {'evidence', 'report', 'review', 'delivery', 'proof', 'authority', 'observation',
     'handoff', 'spec', 'approval', 'presentation', 'integration', 'independent_review',
     'author_report', 'merge_authority', 'merge_verification', 'remote_verification', 'artifacts',
     'resource_authority', 'independent_quality', 'technical_acceptance', 'authority_evidence',
     'discussion', 'check', 'start_reference', 'specs', 'probe_evidence', 'basis',
     'merge_observation', 'imported_author_report', 'original_report', 'artifact',
     'author_source_manifest', 'cleanup_proof', 'continuation', 'delivery_check', 'dispatch_result',
-    'host_confirmation', 'inbound', 'launch', 'manifest', 'native_request', 'outbound',
+    'host_confirmation', 'inbound', 'launch', 'manifest', 'native_request', 'outbound', 'declaration',
     'reconcile_result', 'reference', 'release_receipt', 'request', 'request_evidence', 'result',
     'source', 'transport_evidence', 'unused_proof', 'backup_evidence', 'installation_evidence',
     'real_task_evidence', 'cancellation_verification',
@@ -145,9 +145,12 @@ def create(runtime, task_id, operation_id, resource, authority, actor, invoke, *
 
 
 def preserved_binding(task):
-    return {key: deepcopy(task.get(key)) for key in ('owner_agent_id','worktree','branch','delivery_revision',
+    result = {key: deepcopy(task.get(key)) for key in ('owner_agent_id','worktree','branch','delivery_revision',
         'delivery','merge','review','independent_quality','technical_acceptance','integration','mr','development_binding',
         'requirements','resource_authority')}
+    if task.get('preservation_classification'):
+        result['preservation_classification'] = deepcopy(task['preservation_classification'])
+    return result
 
 
 def remote_binding(state, task_id, source, reference, scope):
@@ -182,6 +185,8 @@ def preserve(runtime, task_id, destination, handoff, actor, *, merge_verificatio
         state = runtime._load(); runtime._resource_actor(state, actor, task_id); runtime._scope(state, task_id)
         task = state['tasks'][task_id]
         require(task['phase'] == 'completed' and task.get('merge', {}).get('verified'), 'verified main completion required')
+        from preservation_contract import captures, CAPTURE_SLOTS
+        classified = captures(state, task_id)
         inventory(state, task_id)
         report = report_for(state, task_id)
         require(Path(destination).is_absolute(), 'absolute preservation directory required')
@@ -190,6 +195,7 @@ def preserve(runtime, task_id, destination, handoff, actor, *, merge_verificatio
         context=dict(project_id=runtime.project_id,task_id=task_id,operation_id=operation_id,
             binding=preserved_binding(task),destination=str(destination),handoff=handoff,scope=scope,
             merge_verification=merge_verification or task['merge']['proof'],extra=list(extra))
+        addition = None
         if operation_id:
             operation=state['runtime']['operations'][operation_id]
             require(operation.get('operation')=='continuation-effect' and operation['task_id']==task_id and
@@ -197,7 +203,19 @@ def preserve(runtime, task_id, destination, handoff, actor, *, merge_verificatio
         if io_path(destination).exists():
             require(operation_id and marker.is_file(),'new absolute preservation directory or original marked copy required')
             prior=load_bound(ref(marker))
-            require(all(prior.get(key)==value for key,value in context.items()),'preservation resume binding changed')
+            prior_context = dict(context)
+            if task.get('preservation_classification') and 'preservation_classification' not in prior.get('binding', {}):
+                prior_context['binding'] = dict(context['binding'])
+                prior_context['binding'].pop('preservation_classification')
+                require(all(prior.get(key)==value for key,value in prior_context.items()),'preservation resume binding changed')
+                # Append the exact classification to the same operation; keep the old
+                # marker and failed partial bytes intact for review.
+                amendment = io_path(destination/'preservation-classification-intent.json')
+                addition = dict(context, original_intent=ref(marker))
+                if amendment.exists():
+                    require(load_bound(ref(amendment))==addition,'preservation classification intent changed')
+            else:
+                require(all(prior.get(key)==value for key,value in context.items()),'preservation resume binding changed')
             require(not remote_verification or remote_verification==prior.get('remote_verification'),'original remote observation required')
             remote_verification=prior.get('remote_verification')
         require(scope=='fixture_only' or remote_verification, 'actual cloud main verification required before reclamation preservation')
@@ -207,6 +225,7 @@ def preserve(runtime, task_id, destination, handoff, actor, *, merge_verificatio
         for resource in state['runtime'].get('resources', {}).values():
             require(not resource.get('path') or not destination.is_relative_to(canonical_path(resource['path'])),
                     'preservation inside resource')
+        if addition and not amendment.exists(): write_atomic(amendment, addition)
         if operation_id and not marker.exists():
             marker.parent.mkdir(parents=True,exist_ok=False)
             write_atomic(marker,dict(context,remote_verification=remote_verification))
@@ -219,13 +238,16 @@ def preserve(runtime, task_id, destination, handoff, actor, *, merge_verificatio
         reports = [row['payload']['report'] for row in state['receipts'].values() if
             row.get('status') == 'processed' and row.get('payload', {}).get('task_id') == task_id and
             row['payload'].get('kind') == 'completed']
-        def copy(value, required=False, declared=False, report_ref=None):
+        def copy(value, required=False, declared=False, report_ref=None, slot=None):
             # Reference shape and an inline evidence declaration are separate;
             # a referenced file starts its own JSON content contract below.
             if isinstance(value, dict):
                 reference = required and 'path' in value and 'sha256' in value
                 if reference:
                     original = dict(path=value['path'], sha256=value['sha256'])
+                    capture = next((row for row in classified if row['original']==original), None)
+                    require(not capture or slot in CAPTURE_SLOTS[capture['contract']],
+                            'required delivery/authority/proof cannot be classified as capture')
                     token = fingerprint(original)
                     if token not in seen:
                         seen.add(token)
@@ -242,6 +264,7 @@ def preserve(runtime, task_id, destination, handoff, actor, *, merge_verificatio
                         else:
                             with io_path(target).open('xb') as stream: stream.write(data)
                         row = dict(ref(target), original=original)
+                        if capture: row['capture'] = {k:v for k,v in capture.items() if k!='original'}
                         if provenance: row['git_source'] = provenance
                         files.append(row)
                         # Keep JSON identities; historical reads revalidate their Git provenance.
@@ -252,13 +275,8 @@ def preserve(runtime, task_id, destination, handoff, actor, *, merge_verificatio
                         manifest = isinstance(nested, list) and bool(nested) and all(
                             isinstance(row, dict) and 'path' in row and 'sha256' in row and
                             Path(row['path']).is_absolute() for row in nested)
-                        copy(nested, manifest, manifest, original if original in reports else report_ref)
-                # Serialized state, host packets and dispatch requests are
-                # captured values, not another live graph. References above
-                # are still checked even when they carry packet metadata.
-                elif not declared and (value.get('schema') in (SCHEMA, 'dispatch-host-result/1') or \
-                        value.get('kind') in ('result', 'host_call', 'host_result') or \
-                        {'request_id','project_id','task_id','requirement','approval','worktree','branch'}.issubset(value)): return
+                        if not capture:
+                            copy(nested, manifest, manifest, original if original in reports else report_ref)
                 elif source_inventory(value):
                     # Supplements already in the tracked inventory are code identities;
                     # necessary non-Git extras still require exact external copies.
@@ -274,18 +292,22 @@ def preserve(runtime, task_id, destination, handoff, actor, *, merge_verificatio
                                     identity = dict(original=nested, git_source=provenance)
                                     if identity not in git_sources: git_sources.append(identity)
                                     continue
-                            copy(nested, True, True, report_ref)
-                    if not declared: return
+                            copy(nested, True, True, report_ref, 'extra')
+                    if not declared:
+                        for key, nested in value.items():
+                            if key not in ('root','kind','files','extra','digest'):
+                                copy(nested, key in REFERENCE_FIELDS, key in REFERENCE_FIELDS, report_ref, key)
+                        return
                 if {'executor_id','generation','files','handoff','unregistered_evidence_preserved'}.issubset(value):
                     copy(value['files'], True, True, report_ref)
                 # Inventory rows and reference metadata can both contain real evidence.
                 for key, nested in value.items():
                     # A preserved copy's original is an identity, not a live dependency.
                     if not (reference and key == 'original'):
-                        copy(nested, key in REFERENCE_FIELDS, declared or key in REFERENCE_FIELDS, report_ref)
+                        copy(nested, key in REFERENCE_FIELDS, declared or key in REFERENCE_FIELDS, report_ref, key)
             elif isinstance(value, list):
-                for nested in value: copy(nested, required, declared, report_ref)
-        copy(preserved_binding(task)); copy(handoff, True); copy(list(extra), True, True);copy(remote_verification, True)
+                for nested in value: copy(nested, required, declared, report_ref, slot)
+        copy(preserved_binding(task)); copy(handoff, True); copy(list(extra), True, True, slot='extra');copy(remote_verification, True)
         copy(state['runtime']['executors'][task['owner_agent_id']])
         for resource in state['runtime'].get('resources', {}).values():
             if resource.get('task_id') == task_id: copy(resource)
@@ -296,6 +318,9 @@ def preserve(runtime, task_id, destination, handoff, actor, *, merge_verificatio
             files=files, merge_verification=proof, handoff=handoff, unregistered_evidence_preserved=True,
             project_id=runtime.project_id, task_id=task_id, binding=preserved_binding(task), source=report['source'], scope=scope)
         if git_sources: manifest['git_sources'] = git_sources
+        if task.get('preservation_classification'): manifest['classification'] = task['preservation_classification']
+        amendment = io_path(destination/'preservation-classification-intent.json')
+        if amendment.exists(): manifest['classification_intent'] = ref(amendment)
         if remote_verification:manifest['remote_verification']=remote_verification
         path = destination/'preservation.json'; write_atomic(path, manifest); reference = ref(path)
         task['preservation'] = reference

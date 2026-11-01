@@ -139,10 +139,16 @@ class ResourceClosedLoop(core_tests.CoreFixture):
     def test_normal_json_inventory_preserves_nested_evidence_before_resource_cleanup(self):
         self.normal_cycle(scoped=True,native=True,durable=True,json_data=True)
 
+    def test_approved_capture_survives_expired_fixture_then_worktree_cleanup_and_close_verification(self):
+        self.normal_cycle(scoped=True,native=True,durable=True,capture_data=True)
+
+    def test_ignored_worktree_capture_uses_sealed_bytes_before_and_after_cleanup(self):
+        self.normal_cycle(scoped=True,native=True,durable=True,capture_data=True,capture_in_worktree=True)
+
     def test_directory_failure_does_not_retain_completed_handed_off_native_agent(self):
         self.normal_cycle(scoped=True,native=True,durable=True,directory_failure=True)
 
-    def normal_cycle(self, scoped=False, native=False, durable=False, directory_failure=False, json_data=False):
+    def normal_cycle(self, scoped=False, native=False, durable=False, directory_failure=False, json_data=False, capture_data=False, capture_in_worktree=False):
         repo = self.repository()
         authority = self.json('approved-task.json',dict(schema='approved-dispatch-plan/1',approval='approved',
             source='direct user message in original main conversation',main_conversation=self.actor,
@@ -162,10 +168,25 @@ class ResourceClosedLoop(core_tests.CoreFixture):
         self.bridge.create_temporary('A','create-db','A:database','database',self.managed/'temporary.sqlite',authority,self.actor,authorized=True)
         (environment/'test.log').write_text('fixture selftest passed',encoding='utf-8')
         (environment/'review.txt').write_text('fixture independent review',encoding='utf-8')
+        capture = None
+        if capture_data:
+            expired = environment/'test-temporary.json'
+            expired.write_bytes(b'simulated host receipt')
+            capture = self.json('captured-test-result.json', dict(results=[dict(evidence=ref(expired))]))
+            # The retained capture itself also lives in a task-owned environment.
+            (environment/'captured-test-result.json').write_bytes(Path(capture['path']).read_bytes())
+            capture = ref(environment/'captured-test-result.json')
+            expired.unlink()
+            capture_bytes = Path(capture['path']).read_bytes()
+            if capture_in_worktree:
+                (tree/'.gitignore').write_text('/test-capture.json\n',encoding='utf-8')
+                (tree/'test-capture.json').write_bytes(capture_bytes)
+                capture = ref(tree/'test-capture.json')
         base = subprocess.check_output(['git','-C',str(repo),'rev-parse','HEAD']).decode().strip()
         # A normal developer advances HEAD after creation. This must remain reclaimable.
         (tree/'feature.py').write_text('feature = 2\n',encoding='utf-8')
-        subprocess.run(['git','-c','core.longpaths=true','-C',str(tree),'add','feature.py'],check=True,capture_output=True)
+        subprocess.run(['git','-c','core.longpaths=true','-C',str(tree),'add','feature.py']+
+            (['.gitignore'] if capture_in_worktree else []),check=True,capture_output=True)
         subprocess.run(['git','-c','core.longpaths=true','-c','user.name=Fixture','-c','user.email=fixture@example.invalid',
             '-c','commit.gpgsign=false','-C',str(tree),'commit','-m','Disposable feature'],check=True,capture_output=True)
         head = subprocess.check_output(['git','-C',str(tree),'rev-parse','HEAD']).decode().strip()
@@ -182,7 +203,7 @@ class ResourceClosedLoop(core_tests.CoreFixture):
         self.runtime.apply(dict(op='delivery-transport',transport=dict(mode='fixture',send_tool='fixture',receive_tool='fixture',
             creates_conversation=False,authors={'worker-A':dict(outbound=outbound,inbound=inbound)})),'delivery-worker')
         report = pack(dict(project_id=self.runtime.project_id,task_id='A',delivery_revision=1,summary='Fixture feature',
-            source_root=str(tree),evidence=[ref(environment/'test.log')],self_test=dict(status='passed',command='fixture test'),
+            source_root=str(tree),evidence=[ref(environment/'test.log')]+([capture] if capture else []),self_test=dict(status='passed',command='fixture test'),
             quality_review=dict(status='passed'),entry=dict(kind='file',target=self.file('acceptance.txt')['path']),
             steps=['Inspect fixture'],expected='Feature works',git=dict(head_sha=head,target_sha=base)))
         write_atomic(environment/'delivery.json',report)
@@ -239,8 +260,27 @@ class ResourceClosedLoop(core_tests.CoreFixture):
             task_id='A' if scoped else None)
         handoff = (self.json('handoff.json', dict(file_inventory=[dict(path='README.md',sha256='0'*64)],
             nested=[dict(evidence=[ref(environment/'test.log')])])) if json_data else self.file('handoff.txt'))
+        if capture_data:
+            classification = self.classification_fixture([capture], actor='delivery-worker')['declaration']
         preservation = self.runtime.preserve_task('A',self.root/'external-preservation',handoff,
             'delivery-worker',scope='fixture_only',remote_verification=remote)
+        if capture_in_worktree:
+            from cleanup import eligibility
+            from evidence import artifact, preserved_read
+            row = next(r for r in load_bound(preservation)['files'] if r['original']==capture)
+            # The cloud-bound completed task reads the sealed package, even while
+            # its old ignored work path is still present and later disappears.
+            Path(capture['path']).write_bytes(b'changed old work path after sealing')
+            with preserved_read(self.runtime._load(),'A'):
+                self.assertEqual(artifact(capture).read_bytes(),capture_bytes)
+            eligibility(self.runtime,self.runtime._load(),'A',preservation,'fixture_only')
+            saved = Path(row['path']); saved.write_bytes(b'tampered sealed package before cleanup')
+            with self.assertRaises(ValueError):
+                with preserved_read(self.runtime._load(),'A'): pass
+            with self.assertRaises(ValueError):
+                eligibility(self.runtime,self.runtime._load(),'A',preservation,'fixture_only')
+            saved.write_bytes(capture_bytes); Path(capture['path']).unlink()
+            eligibility(self.runtime,self.runtime._load(),'A',preservation,'fixture_only')
         if directory_failure:
             (tree/'disposable-test-output.txt').write_text('Untracked temporary output; directory remains protected',encoding='utf-8')
             self.assertEqual(report_for(self.runtime._load(),'A')['source'],report['source'])
@@ -277,6 +317,21 @@ class ResourceClosedLoop(core_tests.CoreFixture):
         from evidence import artifact, preserved_read
         with preserved_read(self.runtime._load(),'A'):
             self.assertTrue(artifact(self.runtime._load()['tasks']['A']['review']['evidence']).exists())
+            if capture_data:
+                self.assertEqual(artifact(capture).read_bytes(), capture_bytes)
+        if capture_data:
+            confirmation = self.runtime._load()['runtime']['operations']['native-close']['close_confirmation']
+            self.assertTrue(self.runtime.verify_close_confirmation(confirmation)['verified'])
+            row = next(r for r in load_bound(preservation)['files'] if r['original']==capture)
+            self.assertEqual(Path(row['path']).read_bytes(), capture_bytes)
+            approval_path = Path(classification['path']); approval_bytes = approval_path.read_bytes()
+            approval_path.write_bytes(b'changed approval')
+            self.assertFalse(self.runtime.verify_close_confirmation(confirmation)['verified'])
+            approval_path.write_bytes(approval_bytes)
+            saved_capture = Path(row['path']); saved_capture.write_bytes(b'tampered frozen capture')
+            self.assertFalse(self.runtime.verify_close_confirmation(confirmation)['verified'])
+            with self.assertRaises(ValueError): report_for(self.runtime._load(),'A')
+            saved_capture.write_bytes(capture_bytes)
         archive = load_bound(preservation)
         copied = next(row for row in archive['files'] if row.get('original')==delivery)
         backup = Path(copied['path']); saved = backup.read_bytes(); backup.write_bytes(b'changed')

@@ -37,6 +37,8 @@ python -X utf8 -B tools/profile.py uninstall --profile C:/explicit-isolated-prof
 
 ## 运行逻辑改动时的回归入口
 
+保全边界定向回归使用 `python -X utf8 -B tools/run_preservation_tests.py --output C:/explicit-evidence/preservation --batch focused test_preservation_boundary test_preservation_refs test_historical_artifacts test_resource_closed_loop test_native_control test_cleanup_runtime`。runner 使用专属 TEMP 和既有 heavy 互斥，保留完整输出、失败/跳过及前后源码指纹。对单个新任务用例可加 `--baseline COMMIT`，只替换原 `preserve` 函数并保留 Git 原始源码字节，在相同批准/文件输入上比较红绿；不切换工作树。旧3案例材料另做有界只读复制，原报告和失败不改。夹具不代表实际旧资源关闭。
+
 派工超时修复使用 `python -X utf8 -B tests/run_dispatch_timeout.py --output C:/explicit-evidence/dispatch-timeout --batch focused test_dispatch_timeout test_dispatch_late test_callback_lock_contention test_dispatch_queued_base`。runner 将临时根登记在该证据目录内，使用现有 heavy 互斥，保留命令、源码前后指纹、失败及跳过。`--baseline COMMIT` 只用于所选原函数的隔离红测，另保留 Git 原始源码字节；不切换或修改工作树。
 
 新用例覆盖 Windows 原进程强退、树创建前后、native 前后、真实返回结构夹具的 ID 保留、活跃 CORE 争用、PID 复用、换锁/账本变化和来源拒绝。精确复制的 host 模块配合隔离故障端点及可控45秒时钟验证强退宽限和两个自有锁恢复，不长睡凑时限；夹具没有创建真实 agent。旧现场材料只读比对，缺创建身份的旧锁继续拒绝自动恢复，三项包外历史材料缺失仍按原测试 skip。

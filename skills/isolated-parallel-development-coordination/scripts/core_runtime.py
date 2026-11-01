@@ -623,6 +623,10 @@ class Runtime:
         from resource_lifecycle import preserve
         return preserve(self,task_id,destination,handoff_ref,actor_id,**options)
 
+    def classify_preservation(self,task_id,declaration_ref,actor_id,**options):
+        from preservation_contract import classify
+        return classify(self,task_id,declaration_ref,actor_id,**options)
+
     def cleanup_task(self,task_id,operation_id,preservation_ref,invoke,actor_id,**options):
         from cleanup import run
         return run(self,task_id,operation_id,preservation_ref,invoke,actor_id,**options)

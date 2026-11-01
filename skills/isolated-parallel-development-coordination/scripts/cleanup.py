@@ -64,6 +64,8 @@ def eligibility(runtime,state,task_id,preservation_ref,scope,*,require_pr_closed
     else:require(task['phase']=='completed' and task.get('merge',{}).get('verified'),'task must be merged into target main and verified before reclamation')
     require(not task.get('publication_dependencies'),'release dependency still uses development resources')
     inventory=load_bound(preservation_ref)
+    from preservation_contract import verify_inventory
+    verify_inventory(state, task_id, inventory)
     if inventory.get('remote_verification'):
         from resource_lifecycle import remote_binding, preserved_binding
         require(task.get('preservation')==preservation_ref and inventory.get('binding')==preserved_binding(task),

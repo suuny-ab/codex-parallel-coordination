@@ -10,6 +10,8 @@ from test_core_runtime import CoreFixture
 
 
 class RealUseTests(CoreFixture):
+    approval_source = 'direct user message in original main conversation'
+
     def setUp(self):
         super().setUp()
         self.prepare(owner='worker-A')
@@ -21,7 +23,7 @@ class RealUseTests(CoreFixture):
         self.reload()
         self.serial = 0
         self.approval = self.json('approval.json', dict(schema='approved-dispatch-plan/1', approval='approved',
-            source='direct user message in original main conversation', main_conversation=self.actor,
+            source=self.approval_source, main_conversation=self.actor,
             integration_agent='integration', user_quote='Approve this task and independent reviewer',
             tasks=[dict(id='A', worktree=str(self.root/'A'), branch='task/A')]))
         # The fixture's original approved document is external to its source.
@@ -88,6 +90,31 @@ class RealUseTests(CoreFixture):
                 self.call('quality',review=self.json(str(self.serial)+'.json',dict(original,**changes)))
             self.assertEqual(before,self.runtime.path.read_bytes())
         with self.assertRaises(ValueError): self.call('quality',actor='worker-A',review=self.review())
+
+    def test_unknown_approval_source_wrong_hash_task_root_and_author_still_rejected(self):
+        self.deliver(); original = load_bound(self.approval); review = self.review()
+        changes = [dict(source='worker self assertion'), dict(main_conversation='wrong-ROOT'),
+            dict(tasks=[dict(id='B',worktree=str(self.root/'A'),branch='task/A')]),
+            dict(tasks=[dict(id='A',worktree=str(self.root/'other'),branch='task/A')])]
+        references = [dict(self.approval,sha256='0'*64)] + [self.json('bad-approval-'+str(i)+'.json',
+            dict(original,**change)) for i,change in enumerate(changes)]
+        for reference in references:
+            before = self.runtime.path.read_bytes()
+            with self.assertRaises(ValueError):
+                self.runtime.real_use(dict(action='quality',task_id='A',approval=reference,review=review),'integration')
+            self.assertEqual(before,self.runtime.path.read_bytes())
+        with self.assertRaises(ValueError): self.call('quality',actor='worker-A',review=review)
+
+    def test_async_approval_does_not_change_technical_or_merge_instruction_contract(self):
+        from real_use_closeout import instruction, SOURCE
+        self.reviewed(self.git_setup())
+        references = [(self.acceptance_authority(),'technical-acceptance-authorization/1'),
+            (self.merge_proof()['merge_authority'],'code-merge-authorization/1')]
+        self.assertEqual(SOURCE,'direct user message in original main conversation')
+        for i,(reference,schema) in enumerate(references):
+            raw = load_bound(reference); raw['source']='explicit async user approval in original main conversation'
+            with self.assertRaises(ValueError):
+                instruction(self.runtime._load(),'A',self.json('async-instruction-'+str(i)+'.json',raw),schema)
 
     def test_automatic_technical_acceptance_keeps_user_pending_and_confirmed_scope(self):
         self.reviewed(); prior=deepcopy(self.runtime._load()['tasks']['A']['requirements'])
@@ -292,3 +319,8 @@ class RealUseTests(CoreFixture):
         run=subprocess.run([sys.executable,'-X','utf8','-B',str(script),'--state-root',str(self.root/'authority'),
             '--project-root',str(self.root/'project'),'real-use',command['path'],'--actor','worker-A'],capture_output=True,text=True)
         self.assertEqual(run.returncode,1);self.assertIn('independent integration reviewer',run.stdout)
+
+
+class AsyncApprovedRealUseTests(RealUseTests):
+    """Same quality/acceptance/Git gates and negatives with the real async origin."""
+    approval_source = 'explicit async user approval in original main conversation'
