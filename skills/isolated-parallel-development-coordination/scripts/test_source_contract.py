@@ -10,6 +10,13 @@ from test_coordination import LedgerFixture
 import test_real_use_closeout
 
 
+def long_source_path(root):
+    directory = Path(root).resolve()
+    while len(str(directory/'bound.txt')) <= 280:
+        directory /= 'p'*80
+    return directory/'bound.txt'
+
+
 def legacy_snapshot(root, kind, extra=()):
     """Frozen dfb7bf8 public contract: ordinary-path rows plus supplied SHA refs."""
     root = Path(root).resolve()
@@ -30,9 +37,10 @@ class SourceContractTests(LedgerFixture):
     def source(self, kind):
         root = self.root/kind; root.mkdir()
         plain = root/'plain.txt'; plain.write_text('plain original', encoding='utf-8')
-        hidden = root/('p'*80)/('q'*80)/'bound.txt'
+        hidden = long_source_path(root)
         io_path(hidden.parent).mkdir(parents=True)
         io_path(hidden).write_text('long original', encoding='utf-8')
+        self.assertGreater(len(str(hidden)), 260)
         self.assertFalse(hidden.is_file()); self.assertTrue(io_path(hidden).is_file())
         if kind == 'git':
             for args in (['init', '-q'], ['add', '.']):
@@ -113,9 +121,11 @@ class SourceQualityTests(unittest.TestCase):
     def test_new_packed_report_reaches_independent_quality_with_long_source(self):
         f = test_real_use_closeout.RealUseTests('test_quality_attaches_without_mutating_author_report_and_duplicates_do_not_write')
         f.setUp(); self.addCleanup(f.doCleanups)
-        hidden = f.root/'A'/('p'*80)/('q'*80)/'bound.txt'
+        hidden = long_source_path(f.root/'A')
         io_path(hidden.parent).mkdir(parents=True)
         io_path(hidden).write_bytes(b'actual owned long file')
+        self.assertGreater(len(str(hidden)), 260)
+        self.assertFalse(hidden.is_file())
         packet = f.deliver(); original = Path(packet['report']['path']).read_bytes()
         f.call('quality', review=f.review())
         report = report_for(f.runtime._load(), 'A')
