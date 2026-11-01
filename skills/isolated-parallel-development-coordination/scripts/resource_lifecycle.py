@@ -200,7 +200,9 @@ def preserve(runtime, task_id, destination, handoff, actor, *, merge_verificatio
                 {'root','files','extra','digest'}.issubset(value)
         def source_identity(value):
             return (canonical_path(value['path']), value['sha256'])
-        def copy(value, required=False):
+        def copy(value, required=False, declared=False):
+            # Reference shape and an inline evidence declaration are separate;
+            # a referenced file starts its own JSON content contract below.
             if isinstance(value, dict):
                 reference = required and 'path' in value and 'sha256' in value
                 if reference:
@@ -222,13 +224,13 @@ def preserve(runtime, task_id, destination, handoff, actor, *, merge_verificatio
                         manifest = isinstance(nested, list) and bool(nested) and all(
                             isinstance(row, dict) and 'path' in row and 'sha256' in row and
                             Path(row['path']).is_absolute() for row in nested)
-                        copy(nested, manifest)
+                        copy(nested, manifest, manifest)
                 # Serialized state, host packets and dispatch requests are
                 # captured values, not another live graph. References above
                 # are still checked even when they carry packet metadata.
-                elif value.get('schema') in (SCHEMA, 'dispatch-host-result/1') or \
+                elif not declared and (value.get('schema') in (SCHEMA, 'dispatch-host-result/1') or \
                         value.get('kind') in ('result', 'host_call', 'host_result') or \
-                        {'request_id','project_id','task_id','requirement','approval','worktree','branch'}.issubset(value): return
+                        {'request_id','project_id','task_id','requirement','approval','worktree','branch'}.issubset(value)): return
                 elif source_inventory(value):
                     # Supplements already in the tracked inventory are code identities;
                     # necessary non-Git extras still require exact external copies.
@@ -236,17 +238,19 @@ def preserve(runtime, task_id, destination, handoff, actor, *, merge_verificatio
                         for row in value['files'] if value['kind'] == 'git' and row.get('relative') and row.get('sha256')}
                     for nested in value['extra']:
                         if not Path(nested['path']).is_absolute() or source_identity(nested) not in source_files:
-                            copy(nested, True)
-                    return
+                            copy(nested, True, True)
+                    if not declared: return
                 if {'executor_id','generation','files','handoff','unregistered_evidence_preserved'}.issubset(value):
-                    copy(value['files'], True)
+                    copy(value['files'], True, True)
                 # Inventory rows and reference metadata can both contain real evidence.
                 for key, nested in value.items():
                     # A preserved copy's original is an identity, not a live dependency.
-                    if not (reference and key == 'original'): copy(nested, key in REFERENCE_FIELDS)
+                    if not (reference and key == 'original'):
+                        copy(nested, key in REFERENCE_FIELDS, declared or key in
+                             ('evidence','artifacts','backup_evidence','installation_evidence','real_task_evidence','raw_journals','specs'))
             elif isinstance(value, list):
-                for nested in value: copy(nested, required)
-        copy(preserved_binding(task)); copy(handoff, True); copy(list(extra), True);copy(remote_verification, True)
+                for nested in value: copy(nested, required, declared)
+        copy(preserved_binding(task)); copy(handoff, True); copy(list(extra), True, True);copy(remote_verification, True)
         copy(state['runtime']['executors'][task['owner_agent_id']])
         for resource in state['runtime'].get('resources', {}).values():
             if resource.get('task_id') == task_id: copy(resource)

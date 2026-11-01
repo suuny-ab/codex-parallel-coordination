@@ -165,3 +165,35 @@ class PreservationRefs(core_tests.CoreFixture):
             handoff=self.file('previous-handoff.txt'),unregistered_evidence_preserved=True))
         manifest = load_bound(self.preserve(dict(preservation=previous)))
         self.assertTrue(any(row['original']==backup for row in manifest['files']))
+
+    def test_declared_evidence_wrappers_reject_missing_and_tampered_dependencies(self):
+        for label, metadata in (('result',dict(kind='result')),
+                                ('host',dict(schema='dispatch-host-result/1'))):
+            for mode in ('missing','tampered'):
+                for grouped in (False,True):
+                    with self.subTest(label=label,mode=mode,grouped=grouped):
+                        name = label+'-'+mode+'-'+str(grouped)
+                        leaf = self.file(name+'.txt','Original required bytes')
+                        if mode=='missing': Path(leaf['path']).unlink()
+                        else: Path(leaf['path']).write_text('changed',encoding='utf-8')
+                        wrapper = dict(metadata,evidence=[leaf])
+                        if grouped: wrapper = dict(metadata,groups=[[wrapper]])
+                        before = self.runtime.path.read_bytes()
+                        destination = self.root/name
+                        with self.assertRaisesRegex(ValueError,'artifact missing|hash mismatch'):
+                            self.preserve(dict(evidence=[wrapper]),destination)
+                        self.assertEqual(self.runtime.path.read_bytes(),before)
+                        self.assertFalse((destination/'preservation.json').exists())
+                        self.assertFalse(self.runtime._load()['tasks']['A'].get('preservation'))
+                        self.assertTrue(self.tree.exists())
+                        self.assertFalse(any(v.get('operation') in ('close','cleanup') for v in
+                            self.runtime._load()['runtime']['operations'].values()))
+
+    def test_declared_wrapper_groups_preserve_refs_without_reading_inventory_data(self):
+        leaf = self.file('wrapper-evidence.txt')
+        data = dict(path=str(self.root/'ordinary-inventory.txt'),sha256='0'*64)
+        wrapper = dict(kind='result',groups=[[dict(schema='dispatch-host-result/1',
+            inventory=[data],evidence=[leaf,leaf])]])
+        manifest = load_bound(self.preserve(dict(evidence=[wrapper])))
+        self.assertEqual(sum(row['original']==leaf for row in manifest['files']),1)
+        self.assertFalse(any(row['original']==data for row in manifest['files']))
