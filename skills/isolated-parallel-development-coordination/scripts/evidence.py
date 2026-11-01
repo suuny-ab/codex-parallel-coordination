@@ -130,14 +130,15 @@ def snapshot(root, kind=None, extra=()):
                                 check=True, timeout=20)
         paths = sorted(set(x.decode("utf-8") for x in result.stdout.split(b"\0") if x))
     else:
-        paths = sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file())
+        paths = sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if io_path(p).is_file())
     files = []
     for relative in paths:
         path = root / relative
-        require(not path.is_symlink() and path.resolve().is_relative_to(root),
+        physical = io_path(path)
+        require(not physical.is_symlink() and path.resolve().is_relative_to(root),
                 "source symlinks/escaping paths unsupported")
-        require(not path.is_dir(), "submodule source requires separate evidence")
-        files.append({"relative": relative, "sha256": digest(path) if path.is_file() else None})
+        require(not physical.is_dir(), "submodule source requires separate evidence")
+        files.append({"relative": relative, "sha256": digest(path) if physical.is_file() else None})
     require(files, "empty source inventory")
     value = {"root": str(root), "kind": kind, "files": files,
              "extra": [ref(artifact(x)) for x in extra]}

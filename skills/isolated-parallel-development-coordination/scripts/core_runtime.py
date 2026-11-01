@@ -65,6 +65,9 @@ class Runtime:
         state['revision'] += 1
         state['last_reconcile'] = None
         state['history'].append(dict(revision=state['revision'], operation=operation))
+        from stage_feedback import capture
+        if operation['op'] != 'stage-feedback' or operation['action'] == 'record-installation':
+            capture(state, [operation['task_id']] if operation.get('task_id') else None)
         validate(state)
         write_atomic(self.path, state)
 
@@ -76,6 +79,8 @@ class Runtime:
             from delivery import CONTROL
             self._actor(state, actor_id, control=operation['op'] in CONTROL)
             state, result = transition(state, dict(operation, actor_id=actor_id))
+            from stage_feedback import capture
+            capture(state)
             write_atomic(self.path, state)
             return result
 
@@ -359,6 +364,17 @@ class Runtime:
         from work_cycle import run
         return run(self, actor_id, observation_ref=observation_ref, collect=collect, task_ids=task_ids)
 
+    def feedback(self, command, actor_id, *, verify_display=None):
+        """Record notification transport/display facts, never permissions or acceptance."""
+        from stage_feedback import command as record
+        with writer_lock(self.path):
+            state = self._load()
+            result = record(state, command, actor_id, verify_display)
+            if not result.get('duplicate'):
+                self._save(state, dict(op='stage-feedback', action=command['op'], actor_id=actor_id,
+                                       task_id=command.get('task_id')))
+            return dict(result, revision=state['revision'])
+
     def receive(self, payload, actor_id):
         """Cross-channel duplicate facts retain the original canonical provenance."""
         with writer_lock(self.path):
@@ -376,6 +392,8 @@ class Runtime:
                     self._save(state,dict(op='cross-channel-duplicate',event_id=payload['event_id']))
                 return dict(receipt='duplicate',revision=state['revision'])
             state,result=transition(state,dict(op='receive',receipt=payload,actor_id=actor_id))
+            from stage_feedback import capture
+            capture(state)
             write_atomic(self.path,state);return result
 
     def resolve_and_next(self, resolution, actor_id):
@@ -707,7 +725,7 @@ def main():
     sub.add_parser('recover');sub.add_parser('capabilities');sub.add_parser('routing-status')
     work=sub.add_parser('work-cycle');work.add_argument('--actor',required=True);work.add_argument('--observation')
     work.add_argument('--task',action='append',dest='task_ids')
-    for name in ('apply','prepare','cycle','resolve-next','record-main','complete-read-only','routing','real-use'):
+    for name in ('apply','prepare','cycle','resolve-next','record-main','complete-read-only','routing','real-use','feedback'):
         cmd=sub.add_parser(name);cmd.add_argument('input');cmd.add_argument('--actor',required=True)
     args=p.parse_args();runtime=Runtime(args.state_root,args.project_root)
     if args.command=='init': result=runtime.initialize(args.coordinator,worker_capacity=args.worker_capacity)
@@ -721,7 +739,7 @@ def main():
     elif args.command=='complete-read-only':result=runtime.complete_read_only(ref(args.input),args.actor)
     else:
         method={'apply':runtime.apply,'prepare':runtime.prepare,'resolve-next':runtime.resolve_and_next,'routing':runtime.routing,
-                'real-use':runtime.real_use}[args.command]
+                'real-use':runtime.real_use,'feedback':runtime.feedback}[args.command]
         result=method(load(args.input),args.actor)
     print(json.dumps(result,ensure_ascii=False))
     if result.get('status') == 'rejected':

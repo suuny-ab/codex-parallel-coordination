@@ -16,7 +16,7 @@ CURRENT = ("README.md", "docs/validation.md", "docs/lifecycle.md", SKILL + "SKIL
     SKILL + "references/" + name for name in (
         "current-rules.md", "platform-boundary.md", "history/index.md",
         "roles/main.md", "roles/developer.md", "roles/integrator.md",
-        "core-runtime.md", "delivery-delegation.md", "state-protocol.md"))
+        "core-runtime.md", "delivery-delegation.md", "state-protocol.md", "stage-feedback.md"))
 
 
 def prose(data):

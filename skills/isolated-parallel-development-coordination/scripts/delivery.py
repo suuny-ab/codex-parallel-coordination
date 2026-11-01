@@ -271,7 +271,13 @@ def apply(state, op):
 
 
 def closeout_route(state, result):
-    """Only user items/batch completion/important exceptions route to main."""
+    """Reply-needed items and read-only progress use independent routes."""
+    from stage_feedback import capture, pending
+    capture(state, (state.get('last_reconcile') or {}).get('task_scope'))
+    result['notifications'] = pending(state)
+    result['display_required'] = result['notifications']['display_required']
+    if result['display_required']:
+        result['allow_end'] = False
     value = state.get("delivery")
     if not value:
         return
