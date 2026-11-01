@@ -30,6 +30,8 @@ cycle 使用原 coordination-closeout/1 观察：先收件/drain，再验终态�
 
 已派发任务的执行观察与最终报告统一用 [`Runtime.handoff` / CLI handoff](task-handoff.md)：只接续原作者和既有请求，返回最小工具步骤或复用原收件关口。不替代下方本轮对账，不自动唤醒或重派。
 
+交付之后的固定有界接续使用 [`Runtime.continue_delivery` 与已安装 ContinuationHost](delivery-continuation.md)：串接收件、既有独审/验收与真实合并登记、可选获批更新、保全、原生关闭确认、许可释放、目录回收及指定的原获批请求。unknown 沿原操作核证；缺授权/宿主能力分别返回，主会话只承接绑定原操作的最小包。
+
 ### 一轮工作入口
 
 已配置项目的工作开始/结束使用同一入口，不重新初始化账本。从插件根执行（`python` 须指向已核实的解释器）：

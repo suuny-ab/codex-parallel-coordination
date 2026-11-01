@@ -174,7 +174,7 @@ def remote_binding(state, task_id, source, reference, scope):
 
 
 def preserve(runtime, task_id, destination, handoff, actor, *, merge_verification=None, scope='host_verified', extra=(),
-             remote_verification=None):
+             remote_verification=None, operation_id=None):
     """Copy the exact artifact graph; do not rewrite reports or manufacture review."""
     from cleanup import canonical_path, eligibility
     artifact(handoff)
@@ -184,16 +184,32 @@ def preserve(runtime, task_id, destination, handoff, actor, *, merge_verificatio
         require(task['phase'] == 'completed' and task.get('merge', {}).get('verified'), 'verified main completion required')
         inventory(state, task_id)
         report = report_for(state, task_id)
-        require(scope=='fixture_only' or remote_verification, 'actual cloud main verification required before reclamation preservation')
-        if remote_verification:remote_binding(state,task_id,report['source'],remote_verification,scope)
         require(Path(destination).is_absolute(), 'absolute preservation directory required')
         destination = canonical_path(destination)
-        require(not io_path(destination).exists(), 'new absolute preservation directory required')
+        marker=io_path(destination/'preservation-intent.json')
+        context=dict(project_id=runtime.project_id,task_id=task_id,operation_id=operation_id,
+            binding=preserved_binding(task),destination=str(destination),handoff=handoff,scope=scope,
+            merge_verification=merge_verification or task['merge']['proof'],extra=list(extra))
+        if operation_id:
+            operation=state['runtime']['operations'][operation_id]
+            require(operation.get('operation')=='continuation-effect' and operation['task_id']==task_id and
+                    operation['status'] in ('intent','unknown'), 'original preservation operation required')
+        if io_path(destination).exists():
+            require(operation_id and marker.is_file(),'new absolute preservation directory or original marked copy required')
+            prior=load_bound(ref(marker))
+            require(all(prior.get(key)==value for key,value in context.items()),'preservation resume binding changed')
+            require(not remote_verification or remote_verification==prior.get('remote_verification'),'original remote observation required')
+            remote_verification=prior.get('remote_verification')
+        require(scope=='fixture_only' or remote_verification, 'actual cloud main verification required before reclamation preservation')
+        if remote_verification:remote_binding(state,task_id,report['source'],remote_verification,scope)
         for root in [runtime.project_root, Path(task['worktree']), Path(state['runtime']['cleanup_root'])]:
             require(not destination.is_relative_to(canonical_path(root)), 'preservation must outlive resources')
         for resource in state['runtime'].get('resources', {}).values():
             require(not resource.get('path') or not destination.is_relative_to(canonical_path(resource['path'])),
                     'preservation inside resource')
+        if operation_id and not marker.exists():
+            marker.parent.mkdir(parents=True,exist_ok=False)
+            write_atomic(marker,dict(context,remote_verification=remote_verification))
         files, seen = [], set()
         def source_inventory(value):
             return isinstance(value, dict) and value.get('kind') in ('git', 'directory') and \
@@ -214,7 +230,10 @@ def preserve(runtime, task_id, destination, handoff, actor, *, merge_verificatio
                         data = source.read_bytes()
                         target = destination/(token+source.suffix)
                         io_path(target).parent.mkdir(parents=True, exist_ok=True)
-                        with io_path(target).open('xb') as stream: stream.write(data)
+                        if io_path(target).exists():
+                            require(operation_id and io_path(target).read_bytes()==data,'partial preserved bytes changed')
+                        else:
+                            with io_path(target).open('xb') as stream: stream.write(data)
                         files.append(dict(ref(target), original=original))
                         # JSON references retain their original identities; copies resolve only after confirmed cleanup.
                         import json

@@ -84,7 +84,8 @@ console.log(JSON.stringify({error, packet}));
         self.assertEqual(len(f.calls), 1)
 
     def test_documented_host_calls_use_budget_and_preserve_error(self):
-        text = (test_dispatch.ROOT / 'skills/isolated-parallel-development-coordination/references/standard-dispatch.md').read_text(encoding='utf-8')
+        from evidence import io_path
+        text = io_path(test_dispatch.ROOT / 'skills/isolated-parallel-development-coordination/references/standard-dispatch.md').read_text(encoding='utf-8')
         self.assertNotIn('catch { error = true; }', text)
         self.assertIn('timeout_ms: 50000', text)
 

@@ -84,6 +84,26 @@ def load_bound(value):
     return json.loads(content.decode("utf-8-sig"))
 
 
+def callback_result(directory, binding, *, result=None, capture=False):
+    """Immutable return evidence for an already persisted intent, never a task queue.
+
+    A callback may finish while a different CORE writer still owns the lock. Its
+    return is saved independently, then adopted only under the original gates.
+    """
+    path=io_path(Path(directory)/'callback-results'/(fingerprint(binding)+'.json'))
+    if capture:
+        value=dict(schema='callback-result/1',binding=binding,result=result)
+        if path.exists():require(load_bound(ref(path))==value,'conflicting original callback result')
+        else:
+            path.parent.mkdir(parents=True,exist_ok=True)
+            write_atomic(path,value)
+    if not path.exists():return None
+    reference=ref(path);value=load_bound(reference)
+    require(value.get('schema')=='callback-result/1' and value.get('binding')==binding,
+            'callback result differs from original intent')
+    return reference
+
+
 def presentation_view(original):
     """Adapt display types only; preserve raw report and all technical conclusions."""
     report = copy.deepcopy(original)

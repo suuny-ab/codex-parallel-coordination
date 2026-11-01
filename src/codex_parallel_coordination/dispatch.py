@@ -4,7 +4,9 @@ Host adapters, user origin and the fixed profile are trusted host sideband. The
 request contains evidence and task choices, never an actor or granted authority.
 """
 from copy import deepcopy
+from contextlib import ExitStack
 from pathlib import Path
+import os
 import re
 import subprocess
 
@@ -268,7 +270,8 @@ class StandardDispatch:
             raise
 
     def _run(self, request):
-        with writer_lock(self.runtime.directory / 'standard-dispatch-driver'):
+        with ExitStack() as locks:
+            locks.enter_context(writer_lock(self.runtime.directory / 'standard-dispatch-driver'))
             identity, task_id = request['request_id'], request['task_id']
             state = self.runtime._load()
             self.runtime._actor(state, self.actor, control=True)
@@ -281,6 +284,7 @@ class StandardDispatch:
                 # Re-entry after launch must first preserve actual owner/resources;
                 # it does not re-run preflight as if this were an unowned task.
                 if old.get('launch_started'):
+                    locks.close()
                     return self._finish(request, old)
             require(not any(o.get('operation') == 'standard-dispatch' and o.get('task_id') == task_id and
                             key != identity for key, o in operations.items()), 'task already has a dispatch request')
@@ -288,6 +292,8 @@ class StandardDispatch:
             if not old:
                 self._record(identity, operation='standard-dispatch', task_id=task_id,
                              request_digest=fingerprint(request), status='preparing')
+            if not old or old.get('driver_owner_pid')!=os.getpid():
+                self._record(identity,driver_owner_pid=os.getpid())
             for command in commands:
                 # A previously registered identical plan is already guarded above.
                 if command['op'] == 'present' and command['plan_id'] in self.runtime._load()['runtime'].get('intake', {}).get('plans', {}):
@@ -349,6 +355,7 @@ class StandardDispatch:
                 actions=[dict(kind='spawn', task_id=task_id, executor_id=None, message=message)]), self.actor)
             require(result['status'] == 'recorded', result.get('reason', 'routing rejected'))
             self._record(identity, launch_started=True, status='launch_pending')
+            locks.close()  # Canonical launch intent/attempt now owns dedup, not a lock held across native calls.
             self.runtime.launch(task_id, self.developer, attempt_id=attempt, admission=admission['admission'],
                 authorized=True, message=message, spawn=True, route_id=route_id)
             return self._finish(request, self.runtime._load()['runtime']['operations'][identity])
@@ -386,6 +393,7 @@ class StandardDispatch:
                 next_action='Resolve native capacity; RESOURCE permit is separate; no automatic retry' if
                     outcome['status'] == 'capacity' else 'Observe original launch; do not resend or change id')
             return self.status(identity)
+        state=self.runtime._load();old=state['runtime']['operations'][identity]
         if old.get('handoff_intent'):
             return self.status(identity)
         # Authority is checked again before the distinct external send.
@@ -395,7 +403,7 @@ class StandardDispatch:
                 self.origin.get('reference') == request['approval'], 'current handoff user origin required')
         require(load_bound(request['approval'])['integration_agent'] == request['integration_agent'], 'integration authority changed')
         require(request['integration_agent'] == self.integration_target, 'integration differs from trusted host recipient')
-        self._record(identity, handoff_intent=True, status='handoff_unknown')
+        self._record(identity, _expected_revision=state['revision'], handoff_intent=True, status='handoff_unknown')
         message = self._handoff_message(request, owner)
         try:
             result = self.integration.call('send', target=request['integration_agent'], message=message, authorized=True)
@@ -489,8 +497,11 @@ class StandardDispatch:
             if stage == 'spawn' and actual:
                 executor_id = 'native_agent:' + actual
                 require(owner in (None, executor_id), 'late result cannot replace an existing owner')
+                require(executor_id not in state['runtime']['executors'] or owner==executor_id and
+                    state['runtime']['operations'][identity+':launch'].get('executor_id')==executor_id,
+                    'late spawn cannot adopt another existing executor or reconstruct a historical mapping')
                 self.runtime.bind_executor(executor_id, {'native_agent': dict(target_id=actual, host_id='current')},
-                    self.actor, result_ref, task_id=task_id)
+                    self.actor, result_ref, task_id=task_id, attempt_id=identity+':launch')
                 executor = self.runtime._load()['runtime']['executors'][executor_id]
                 self._register(request, dict(id=task_id + ':agent', kind='agent', executor_id=executor_id,
                                              generation=executor['generation']))
