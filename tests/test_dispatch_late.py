@@ -26,6 +26,13 @@ import {once} from 'node:events';
 const {DispatchSession} = await import(MODULE);
 const config = JSON.parse(await fs.readFile(process.argv[1], 'utf8'));
 const mode = process.argv[2];
+let deadline;
+const realTimeout = globalThis.setTimeout;
+globalThis.setTimeout = (callback, ms, ...args) => {
+  const timer = realTimeout(callback, ms, ...args);
+  if (ms === 45000) deadline = () => { clearTimeout(timer); callback(); };
+  return timer;
+};
 const session = new DispatchSession(config);
 const pending = await session.next();
 const exited = once(session.child, 'exit');
@@ -35,6 +42,7 @@ if (mode === 'observe' || mode === 'handoff') {
   if (mode === 'handoff') awaiting = await session.reply(awaiting.tool, {status:{'synthetic-late-agent':'running'}});
 }
 if (mode === 'deadline') {
+  deadline(); // Controlled clock; retain the production 45s constant.
   const expired = await session.next();
   if (!expired.result.reason.includes('45 second')) throw new Error('real deadline did not fire');
 } else {
@@ -85,7 +93,7 @@ console.log(JSON.stringify({retained,stored,duplicate,conflict,verified,
         self.assertEqual(data['verified']['result']['status'], 'needs_reconcile')
         state = fixture.runtime._load()
         self.assertEqual(state['tasks']['A']['worker_run']['status'], 'running' if mode == 'handoff' else 'queued')
-        if mode == 'killed_child':
+        if mode in ('killed_child', 'deadline', 'child_exit'):
             self.assertFalse(fixture.runtime.path.with_suffix('.json.lock').exists())
             self.assertFalse((fixture.runtime.directory/'standard-dispatch-driver.lock').exists())
         self.assertEqual(data['verified']['result']['owner_agent_id'], 'native_agent:synthetic-late-agent', data['verified'])
@@ -132,7 +140,7 @@ console.log(JSON.stringify({retained,stored,duplicate,conflict,verified,
     def test_child_exit_late_result_and_duplicate_conflict(self):
         self.probe('child_exit')
 
-    def test_actual_45_second_deadline_retains_late_result(self):
+    def test_controlled_45_second_deadline_retains_late_result(self):
         self.probe('deadline')
 
     def test_abrupt_child_exit_preserves_result_without_stealing_lock(self):

@@ -3,7 +3,7 @@ import json
 import os
 from pathlib import Path
 
-from evidence import artifact, fingerprint, io_path, load_bound, ref, require, write_atomic
+from evidence import artifact, io_path, load_bound, ref, require, write_atomic
 
 
 def dead(pid):
@@ -34,7 +34,7 @@ def dead(pid):
     return False
 
 
-def recover(runtime, references, destination, actor_id, *, request_ref=None):
+def recover(runtime, references, destination, actor_id, *, request_ref=None, dispatch_evidence_root=None):
     runtime._actor(runtime._load(), actor_id, control=True)
     require(references and Path(destination).is_absolute(), 'bound locks and absolute external backup required')
     destination = Path(destination).resolve()
@@ -44,6 +44,20 @@ def recover(runtime, references, destination, actor_id, *, request_ref=None):
     require(all(not destination.is_relative_to(p.resolve()) for p in roots), 'lock backup must outlive managed resources')
     paths = [runtime.path, runtime.directory/'standard-dispatch-driver']
     allowed = {p.with_suffix(p.suffix+'.lock').resolve(): p.resolve() for p in paths}
+    if dispatch_evidence_root is not None:
+        require(request_ref and Path(dispatch_evidence_root).is_absolute() and
+                Path(dispatch_evidence_root).resolve() == destination, 'fixed host dispatch evidence root required')
+        request = load_bound(request_ref)
+        if 'spec_check' in request:
+            from codex_parallel_coordination.dispatch import approved_request
+            request = approved_request(request)
+        require(request.get('schema') != 'delivery-continuation/1', 'dispatch recovery cannot replace preservation recovery')
+        require(all(Path(r['path']).resolve() in allowed and not Path(r['path']).is_symlink() for r in references),
+                'only this runtime finite-call locks are recoverable')
+        from dispatch_lock import dispatch_binding, recover_dispatch_locks
+        recovered = recover_dispatch_locks(runtime, dispatch_binding(runtime, request, actor_id, request_ref),
+                                           destination, references=references)
+        return dict(status='recovered', locks=recovered, automatic_retry=False)
     checked = []
     for reference in references:
         path = Path(reference['path']).resolve()
@@ -92,11 +106,7 @@ def recover(runtime, references, destination, actor_id, *, request_ref=None):
                         op.get('status') in ('intent','unknown','accepted_unconfirmed') for op in state['runtime']['operations'].values()),
                 'uncertain native effect requires separate reconciliation')
     else:
-        require(operation.get('operation')=='standard-dispatch' and operation.get('request_digest')==fingerprint(request) and
-                all(pid==operation.get('driver_owner_pid') for _,_,_,_,pid in checked),'original request/driver owner differs')
-        require(not operation.get('launch_started') and task['owner_agent_id'] is None and task['worker_run']['status']=='queued' and
-                not any(op.get('task_id')==request['task_id'] and op.get('operation') in ('spawn','send','close','resume')
-                        for op in state['runtime']['operations'].values()), 'native work or uncertain effect requires separate reconciliation')
+        require(False, 'dispatch recovery requires creation identity and the trusted host evidence root')
     destination.mkdir(parents=True, exist_ok=True)
     saved = []
     for path, reference, data, info, pid in checked:

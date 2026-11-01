@@ -472,6 +472,7 @@ class DispatchStartupRecoveryTests(unittest.TestCase):
         self.assertEqual(f.run_dispatch()['status'],'dispatched')
         self.assertEqual(f.runtime._load()['concurrent_fixture_fact'],'wait_agent')
 
+    @unittest.skipUnless(os.name == 'nt', 'Scoped dispatch recovery requires Windows process creation identity')
     def test_tree_and_admission_before_native_dead_locks_resume_same_request(self):
         import test_dispatch
         f=test_dispatch.DispatchTests('test_fixed_bundle_derives_fields_from_frozen_materials')
@@ -499,12 +500,11 @@ standard_dispatch.main()
         references=[]
         for target in (f.runtime.path,f.runtime.directory/'standard-dispatch-driver'):
             lock=target.with_suffix(target.suffix+'.lock')
-            if not lock.exists():
-                # The process died just outside the short CORE transaction; driver ownership is actual.
-                pid=f.runtime._load()['runtime']['operations']['dispatch-A']['driver_owner_pid']
-                write_atomic(lock,dict(pid=pid,state=str(target)))
-            references.append(ref(lock))
-        f.runtime.recover_call_locks(references,str(f.root/'dead-startup-backup'),f.actor,request_ref=request_ref)
+            if lock.exists():
+                references.append(ref(lock))
+        self.assertTrue(references)  # Actual scoped locks, never fabricated PID-only replacements.
+        f.runtime.recover_call_locks(references,str(f.bridge.evidence),f.actor,request_ref=request_ref,
+                                    dispatch_evidence_root=str(f.bridge.evidence))
         self.assertEqual(f.run_dispatch()['status'],'dispatched')
         self.assertEqual(f.run_dispatch()['status'],'dispatched')
         self.assertEqual(f.request,request);self.assertEqual([tool for tool,_ in f.calls],['spawn_agent','wait_agent','send_input'])
