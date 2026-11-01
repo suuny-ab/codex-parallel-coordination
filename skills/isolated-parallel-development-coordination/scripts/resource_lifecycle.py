@@ -2,8 +2,25 @@
 from copy import deepcopy
 from pathlib import Path
 
-from coordination import writer_lock
+from coordination import SCHEMA, writer_lock
 from evidence import artifact, fingerprint, io_path, load_bound, ref, report_for, require, write_atomic
+
+
+# Only declared contract slots carry references; path/hash-shaped JSON elsewhere
+# is data. Lists in these slots retain the same reference requirement.
+REFERENCE_FIELDS = {'evidence', 'report', 'delivery', 'proof', 'authority', 'observation',
+    'handoff', 'spec', 'approval', 'presentation', 'integration', 'independent_review',
+    'author_report', 'merge_authority', 'merge_verification', 'remote_verification', 'artifacts',
+    'resource_authority', 'independent_quality', 'technical_acceptance', 'authority_evidence',
+    'discussion', 'check', 'start_reference', 'specs', 'probe_evidence', 'basis',
+    'merge_observation', 'imported_author_report', 'original_report', 'artifact',
+    'author_source_manifest', 'cleanup_proof', 'continuation', 'delivery_check', 'dispatch_result',
+    'host_confirmation', 'inbound', 'launch', 'manifest', 'native_request', 'outbound',
+    'reconcile_result', 'reference', 'release_receipt', 'request', 'request_evidence', 'result',
+    'source', 'transport_evidence', 'unused_proof', 'backup_evidence', 'installation_evidence',
+    'real_task_evidence', 'cancellation_verification',
+    'actual_App_final', 'old_review', 'merged_source_archive', 'fresh_checks',
+    'packaging14_and_negatives3_reused', 'probe', 'raw_journals', 'preservation'}
 
 
 def managed_path(state, path):
@@ -178,35 +195,67 @@ def preserve(runtime, task_id, destination, handoff, actor, *, merge_verificatio
             require(not resource.get('path') or not destination.is_relative_to(canonical_path(resource['path'])),
                     'preservation inside resource')
         files, seen = [], set()
-        def copy(value):
+        def source_inventory(value):
+            return isinstance(value, dict) and value.get('kind') in ('git', 'directory') and \
+                {'root','files','extra','digest'}.issubset(value)
+        def source_identity(value):
+            return (canonical_path(value['path']), value['sha256'])
+        def copy(value, required=False, declared=False):
+            # Reference shape and an inline evidence declaration are separate;
+            # a referenced file starts its own JSON content contract below.
             if isinstance(value, dict):
-                if 'path' in value and 'sha256' in value:
+                reference = required and 'path' in value and 'sha256' in value
+                if reference:
                     original = dict(path=value['path'], sha256=value['sha256'])
                     token = fingerprint(original)
-                    if token in seen: return
-                    seen.add(token)
-                    source = artifact(original)
-                    data = source.read_bytes()
-                    target = destination/(token+source.suffix)
-                    io_path(target).parent.mkdir(parents=True, exist_ok=True)
-                    with io_path(target).open('xb') as stream: stream.write(data)
-                    files.append(dict(ref(target), original=original))
-                    # JSON references retain their original identities; copies resolve only after confirmed cleanup.
-                    import json
-                    try: nested = json.loads(data.decode('utf-8-sig'))
-                    except (ValueError, UnicodeError): return
-                    copy(nested)
-                else:
-                    for nested in value.values(): copy(nested)
+                    if token not in seen:
+                        seen.add(token)
+                        source = artifact(original)
+                        data = source.read_bytes()
+                        target = destination/(token+source.suffix)
+                        io_path(target).parent.mkdir(parents=True, exist_ok=True)
+                        with io_path(target).open('xb') as stream: stream.write(data)
+                        files.append(dict(ref(target), original=original))
+                        # JSON references retain their original identities; copies resolve only after confirmed cleanup.
+                        import json
+                        try: nested = json.loads(data.decode('utf-8-sig'))
+                        except (ValueError, UnicodeError): nested = None
+                        # A JSON root list of absolute artifact refs is a manifest.
+                        manifest = isinstance(nested, list) and bool(nested) and all(
+                            isinstance(row, dict) and 'path' in row and 'sha256' in row and
+                            Path(row['path']).is_absolute() for row in nested)
+                        copy(nested, manifest, manifest)
+                # Serialized state, host packets and dispatch requests are
+                # captured values, not another live graph. References above
+                # are still checked even when they carry packet metadata.
+                elif not declared and (value.get('schema') in (SCHEMA, 'dispatch-host-result/1') or \
+                        value.get('kind') in ('result', 'host_call', 'host_result') or \
+                        {'request_id','project_id','task_id','requirement','approval','worktree','branch'}.issubset(value)): return
+                elif source_inventory(value):
+                    # Supplements already in the tracked inventory are code identities;
+                    # necessary non-Git extras still require exact external copies.
+                    source_files = {(canonical_path(Path(value['root'])/row['relative']), row['sha256'])
+                        for row in value['files'] if value['kind'] == 'git' and row.get('relative') and row.get('sha256')}
+                    for nested in value['extra']:
+                        if not Path(nested['path']).is_absolute() or source_identity(nested) not in source_files:
+                            copy(nested, True, True)
+                    if not declared: return
+                if {'executor_id','generation','files','handoff','unregistered_evidence_preserved'}.issubset(value):
+                    copy(value['files'], True, True)
+                # Inventory rows and reference metadata can both contain real evidence.
+                for key, nested in value.items():
+                    # A preserved copy's original is an identity, not a live dependency.
+                    if not (reference and key == 'original'):
+                        copy(nested, key in REFERENCE_FIELDS, declared or key in REFERENCE_FIELDS)
             elif isinstance(value, list):
-                for nested in value: copy(nested)
-        copy(preserved_binding(task)); copy(handoff); copy(list(extra));copy(remote_verification)
+                for nested in value: copy(nested, required, declared)
+        copy(preserved_binding(task)); copy(handoff, True); copy(list(extra), True, True);copy(remote_verification, True)
         copy(state['runtime']['executors'][task['owner_agent_id']])
         for resource in state['runtime'].get('resources', {}).values():
             if resource.get('task_id') == task_id: copy(resource)
         for receipt in state['receipts'].values():
             if receipt.get('payload', {}).get('task_id') == task_id: copy(receipt)
-        proof = merge_verification or task['merge']['proof']; copy(proof)
+        proof = merge_verification or task['merge']['proof']; copy(proof, True)
         manifest = dict(executor_id=task['owner_agent_id'], generation=state['runtime']['executors'][task['owner_agent_id']]['generation'],
             files=files, merge_verification=proof, handoff=handoff, unregistered_evidence_preserved=True,
             project_id=runtime.project_id, task_id=task_id, binding=preserved_binding(task), source=report['source'], scope=scope)
