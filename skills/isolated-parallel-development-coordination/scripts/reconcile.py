@@ -103,6 +103,17 @@ def closeout(original, observation, observation_ref, actor_id=None, task_scope=N
     def receive(state, message, source=None):
         if task_scope is None:
             return transition(state, {"op": "receive", "receipt": message, "actor_id": actor_id})
+        if message.get('origin_mode') == 'task_handoff':
+            from task_handoff import authority
+            require(authority(state, message['task_id'])['recipient_agent_id'] == actor_id,
+                    'actual scoped handoff receiver required')
+            candidate, result = transition(state, {"op": "receive", "receipt": message, "actor_id": actor_id})
+            from coordination import consume
+            receipt = candidate['receipts'].get(message['event_id'])
+            if receipt and receipt['status'] in ('buffered', 'held'):
+                status = consume(candidate, receipt['payload'])
+                receipt.update(status=status, reason=None)
+            return candidate, result
         from demand_routing import receive_observed
         candidate = copy.deepcopy(state)
         result = receive_observed(candidate, message, source or message['origin_observation'], actor_id)
@@ -114,7 +125,7 @@ def closeout(original, observation, observation_ref, actor_id=None, task_scope=N
         arrivals = [r['payload'] for r in state['receipts'].values() if r['status'] in ('buffered', 'held')]
         arrivals += [r['payload'] for r in state.get('unverified_receipts', {}).values() if r['status']=='unverified']
         for packet in arrivals:
-            if packet['task_id'] in task_scope and packet.get('origin_mode')=='observed_terminal':
+            if packet['task_id'] in task_scope and packet.get('origin_mode') in ('observed_terminal','task_handoff'):
                 try:
                     state, _ = receive(state, packet)
                 except ERRORS as error:

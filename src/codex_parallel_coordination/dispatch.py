@@ -39,10 +39,12 @@ class StandardDispatch:
         self.actor = developer.actor_id
         self.integration_target = integration_target
 
-    def _record(self, identity, **changes):
+    def _record(self, identity, *, _expected_revision=None, **changes):
         with writer_lock(self.runtime.path):
             state = self.runtime._load()
             self.runtime._actor(state, self.actor, control=True)
+            require(_expected_revision is None or state['revision'] == _expected_revision,
+                    'queued baseline state changed; recheck original request')
             value = state['runtime']['operations'].setdefault(identity, {})
             value.update(deepcopy(changes))
             self.runtime._save(state, dict(op='standard-dispatch', request_id=identity))
@@ -92,7 +94,81 @@ class StandardDispatch:
         require(record['start_reference'] == request['approval'], 'start must reference original approval')
         return item, commands, rights
 
-    def _preflight(self, request, previous):
+    def _base(self, request, previous):
+        base = request['base_main']
+        for reference in (previous or {}).get('base_revisions', []):
+            proof = load_bound(reference)
+            expected = dict(schema='queued-dispatch-baseline/1', project_id=self.runtime.project_id,
+                task_id=request['task_id'], request_id=request['request_id'], request_digest=fingerprint(request),
+                approval=request['approval'], original_base_main=request['base_main'], previous_base_main=base,
+                worktree=request['worktree'], branch=request['branch'], actor_id=self.actor)
+            require(all(proof.get(k) == v for k, v in expected.items()) and
+                re.fullmatch(r'[a-f0-9]{40}', proof.get('effective_base_main', '')) and
+                proof['local_main'] == proof['remote_main'] == proof['effective_base_main'],
+                'queued baseline evidence differs from original request')
+            base = proof['effective_base_main']
+        return base
+
+    def rebase_queued(self, request, *, authorized=False):
+        """Append one observed technical baseline, never dispatch or edit frozen input.
+
+        authorized is current trusted-host sideband, not a task/file permission.
+        Only a never-started RESOURCE queue may use this separate finite action.
+        """
+        require(authorized is True, 'current scoped queued-rebase authorization required')
+        if 'spec_check' in request:
+            request = approved_request(request)
+        with writer_lock(self.runtime.directory / 'standard-dispatch-driver'):
+            state = self.runtime._load()
+            self.runtime._actor(state, self.actor, control=True)
+            identity, task_id = request['request_id'], request['task_id']
+            old = state['runtime']['operations'].get(identity, {})
+            require(old.get('operation') == 'standard-dispatch' and old.get('task_id') == task_id and
+                old.get('request_digest') == fingerprint(request) and old.get('status') == 'queued' and
+                old.get('admission') == dict(status='queued', request_id=identity+':capacity', admission=None),
+                'same original RESOURCE-queued request required')
+            require(not any(old.get(k) for k in ('launch_started', 'worktree_intent', 'handoff_intent', 'retained_host_results')) and
+                not any(key != identity and op.get('task_id') == task_id for key, op in state['runtime']['operations'].items()) and
+                not any(r.get('task_id') == task_id for r in state['runtime'].get('resources', {}).values()) and
+                not any(r.get('task_id') == task_id for r in state['runtime'].get('intake', {}).get('routes', {}).values()),
+                'queued rebase excludes every tree/resource/host intent')
+            task = state['tasks'][task_id]
+            require(task['owner_agent_id'] is None and task['phase'] == 'backlog' and
+                task['worker_run']['status'] == 'queued', 'queued rebase cannot replace an actual author')
+            require(not Path(request['worktree']).exists(), 'queued worktree already exists')
+            capacity = dict(request_id=identity+':capacity', project_id=self.runtime.project_id, task_id=task_id,
+                attempt_id=identity+':launch', launch_identity='spawn:'+identity+':launch', resource_class='agent_execution_slot')
+            capacity_ref = ref(self.bridge.evidence/('dispatch-'+fingerprint(identity)+'-capacity.json'))
+            require(load_bound(capacity_ref) == capacity, 'original queued capacity source differs')
+            resource, _ = self.bridge.controller.read()
+            observed = resource['capacity_requests'].get(identity+':capacity', {})
+            from .resources.support import fingerprint as resource_fingerprint
+            require(observed.get('spec') == capacity and observed.get('spec_digest') == resource_fingerprint(capacity) and
+                observed.get('status') in ('queued', 'granted'), 'same active RESOURCE request required; no new permit')
+            previous = self._base(request, old)
+            current = self.git._git('rev-parse', 'refs/heads/main').stdout.decode().strip()
+            # This reuses all original scope, approval, host, path, branch, policy
+            # and local/remote guards; only its technical expected base differs.
+            self._preflight(request, old, base_main=current)
+            try:
+                self.git._git('merge-base', '--is-ancestor', previous, current)
+            except subprocess.CalledProcessError as error:
+                raise ValueError('previous queued baseline must be an ancestor of current main') from error
+            if previous == current:
+                return dict(self.status(identity), effective_base_main=current, duplicate=True, host_actions=[])
+            proof = dict(schema='queued-dispatch-baseline/1', project_id=self.runtime.project_id, task_id=task_id,
+                request_id=identity, request_digest=fingerprint(request), approval=request['approval'],
+                original_base_main=request['base_main'], previous_base_main=previous, effective_base_main=current,
+                local_main=current, remote_main=current, worktree=request['worktree'], branch=request['branch'],
+                based_on_revision=state['revision'],
+                actor_id=self.actor, capacity_source=capacity_ref, observed_capacity=deepcopy(observed),
+                authorization='Current scoped trusted-host call; this artifact does not grant authority', scope=self.developer.scope)
+            evidence = self._evidence(identity, 'baseline-'+current+'-'+str(state['revision']), proof)
+            self._record(identity, _expected_revision=state['revision'],
+                         base_revisions=[*old.get('base_revisions', []), evidence])
+            return dict(self.status(identity), effective_base_main=current, duplicate=False, host_actions=[])
+
+    def _preflight(self, request, previous, *, base_main=None):
         state = self.runtime._load()
         self.runtime._actor(state, self.actor, control=True)
         require(self.integration.actor_id == self.actor, 'host adapter actor mismatch')
@@ -132,9 +208,10 @@ class StandardDispatch:
                 'worktree outside current RESOURCE policy')
         require(not any(report.resolve().is_relative_to(Path(p).resolve()) for p in roots),
                 'report inside managed cleanup root')
-        require(self.git._git('rev-parse', 'refs/heads/main').stdout.decode().strip() == request['base_main'], 'stale local main')
+        base_main = base_main or self._base(request, previous)
+        require(self.git._git('rev-parse', 'refs/heads/main').stdout.decode().strip() == base_main, 'stale local main')
         remote = self.git._git('ls-remote', 'origin', 'refs/heads/main').stdout.decode().split()
-        require(remote and remote[0] == request['base_main'], 'stale remote main')
+        require(remote and remote[0] == base_main, 'stale remote main')
         require(re.fullmatch(r'codex/[A-Za-z0-9][A-Za-z0-9_./-]*', request['branch']) and
                 '..' not in request['branch'], 'invalid task branch')
         self.git._git('check-ref-format', '--branch', request['branch'])
@@ -151,7 +228,7 @@ class StandardDispatch:
         branch_used = [e for e in entries if e.get('branch') == 'refs/heads/' + request['branch']]
         if tree.exists() or matches or branch_used:
             require(owned and len(matches) == 1 and matches == branch_used and
-                    matches[0].get('HEAD') == request['base_main'], 'unowned or changed worktree')
+                    matches[0].get('HEAD') == base_main, 'unowned or changed worktree')
         elif not previous or not previous.get('worktree_intent'):
             exists = self.git.runner(['git', '-c', 'core.longpaths=true', '-C', str(self.git.repository),
                                      'show-ref', '--verify', '--quiet', 'refs/heads/' + request['branch']],
@@ -197,6 +274,7 @@ class StandardDispatch:
             self.runtime._actor(state, self.actor, control=True)
             operations = state['runtime']['operations']
             old = operations.get(identity)
+            base_main = self._base(request, old)
             if old:
                 require(old.get('operation') == 'standard-dispatch' and old['request_digest'] == fingerprint(request),
                         'conflicting dispatch request')
@@ -239,23 +317,23 @@ class StandardDispatch:
             if not old.get('worktree_intent'):
                 reserved = any(Path(e['worktree']).resolve() == Path(request['worktree']).resolve()
                                for e in self.git._entries())
-                self._record(identity, worktree_intent=dict(path=request['worktree'], branch=request['branch'], base=request['base_main']))
+                self._record(identity, worktree_intent=dict(path=request['worktree'], branch=request['branch'], base=base_main))
                 if not reserved:
                     try:
                         self.git.create(dict(path=request['worktree'], metadata=dict(repository_root=str(self.git.repository))),
-                                        request['branch'], request['base_main'])
+                                        request['branch'], base_main)
                     except (subprocess.SubprocessError, OSError) as error:
                         self._record(identity, status='worktree_unknown', error_type=type(error).__name__)
                         return self.status(identity)
             entries = [e for e in self.git._entries() if Path(e['worktree']).resolve() == Path(request['worktree']).resolve()]
             require(len(entries) == 1 and entries[0].get('branch') == 'refs/heads/' + request['branch'] and
-                    entries[0]['HEAD'] == request['base_main'], 'worktree intent needs observation; never blindly recreate')
+                    entries[0]['HEAD'] == base_main, 'worktree intent needs observation; never blindly recreate')
             self._register(request, dict(id=task_id + ':worktree', kind='worktree', path=request['worktree']))
             self.bridge.artifacts.register(dict(resource_id=task_id + ':worktree', project_id=self.runtime.project_id,
                 task_id=task_id, attempt_id=attempt, kind='git_worktree', path=request['worktree'], references=[task_id],
                 protected=False, metadata=dict(repository_root=str(self.git.repository), branch='refs/heads/' + request['branch'])))
             message = '\n'.join([f"Task {task_id}: {item['name']}", f"Project: {self.runtime.project_root}",
-                f"Worktree: {request['worktree']}\nBranch: {request['branch']}\nBase main: {request['base_main']}",
+                f"Worktree: {request['worktree']}\nBranch: {request['branch']}\nBase main: {base_main}",
                 f"Read spec: {request['requirement']['spec']['path']}", item['scope'],
                 'Acceptance:\n' + '\n'.join(item['acceptance']),
                 f"Approval: {request['approval']['path']}\nGit rights: {rights}",
@@ -303,7 +381,10 @@ class StandardDispatch:
             self._register(request, dict(id=task_id + ':agent', kind='agent', executor_id=owner,
                                         generation=executor['generation']))
         if outcome['status'] != 'running':
-            self._record(identity, status=outcome['status'], reason='Observe original launch; do not resend or change id')
+            self._record(identity, status=outcome['status'],
+                reason=outcome.get('reason') or 'Observe original launch; do not resend or change id',
+                next_action='Resolve native capacity; RESOURCE permit is separate; no automatic retry' if
+                    outcome['status'] == 'capacity' else 'Observe original launch; do not resend or change id')
             return self.status(identity)
         if old.get('handoff_intent'):
             return self.status(identity)
@@ -365,16 +446,29 @@ class StandardDispatch:
             route = state['runtime']['intake']['routes'][launch['route_id']]
             owner = state['tasks'][task_id]['owner_agent_id']
             stage, actual = context['stage'], journal['actual_agent_id']
+            capacity_detail = None
             require(context['operation_id'] == identity + (':handoff' if stage == 'handoff' else ':launch'),
                     'host result operation differs')
             if stage == 'spawn':
                 require(packet['tool'] == 'multi_agent_v1__spawn_agent' and intent['canonical_tool'] == 'spawn_agent' and
                         packet['arguments'] == dict(message=route['message']), 'spawn result differs from original route')
                 from host_adapter import unwrap
-                raw = unwrap(response['result']) if not response.get('error') else {}
+                if response.get('error'):
+                    raw = {}
+                elif isinstance(response.get('result'), dict) and response['result'].get('isError'):
+                    rejected = response['result']
+                    raw = dict(error=dict(message='\n'.join(b['text'] for b in rejected.get('content', [])
+                        if b.get('type') == 'text'), raw=rejected))
+                else:
+                    raw = unwrap(response['result'])
                 returned = raw.get('agent_id', raw.get('id')) if not raw.get('error') else None
                 require(returned == actual and (actual is None or isinstance(actual, str) and actual.strip()),
                         'actual spawn identity differs from raw host result')
+                from host_adapter import capacity_error
+                detail = response.get('error') or raw.get('error')
+                detail = detail if isinstance(detail, dict) else dict(message=str(detail))
+                if actual is None and capacity_error(detail):
+                    capacity_detail = detail
             elif stage == 'observe':
                 require(owner is not None, 'observation has no known executor')
                 target = state['runtime']['executors'][owner]['routes']['native_agent']['target_id']
@@ -401,6 +495,14 @@ class StandardDispatch:
                 self._register(request, dict(id=task_id + ':agent', kind='agent', executor_id=executor_id,
                                              generation=executor['generation']))
             retained[stage] = result_ref
+            if capacity_detail:
+                reason = capacity_detail.get('message') or capacity_detail.get('code') or 'native capacity refused'
+                self._record(identity+':launch', status='capacity', error=capacity_detail,
+                    code='agent_capacity_exceeded', reason=reason)
+                self._record(identity, retained_host_results=retained, status='capacity', reason=reason,
+                    next_action='Resolve native capacity; RESOURCE permit is separate; no automatic retry',
+                    next_owner=self.integration_target)
+                return self.status(identity)
             self._record(identity, retained_host_results=retained, status='needs_reconcile',
                 reason='Known host result retained; execution/delivery not inferred', next_action='observe_existing_executor_or_delivery',
                 next_owner=self.integration_target)

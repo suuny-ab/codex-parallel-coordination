@@ -26,6 +26,8 @@ def task_receivers(state):
             receivers[key] = reviewer
         except ERRORS:
             continue  # Expired authority is a gap, never a new role.
+    from task_handoff import receivers as handoff_receivers
+    receivers.update(handoff_receivers(state))
     return receivers
 
 
@@ -165,7 +167,7 @@ def run(runtime, actor_id, *, observation_ref=None, collect=None, task_ids=None)
             'current main/delivery role or approved task receiver required')
     require(observation_ref is None or collect is None, 'provide observation or trusted collector, not both')
     if observation_ref is not None or collect is not None:
-        scoped = not delivery and bool(state.get('runtime', {}).get('observed_dispatches'))
+        scoped = not delivery and bool(receivers or state.get('runtime', {}).get('observed_dispatches'))
         scope = [key for key, owner in receivers.items() if owner == actor_id] if scoped else None
         if scoped:
             require(scope and actor_id != state['coordinator_id'], 'approved task-scoped receiver required; main stays read-only')

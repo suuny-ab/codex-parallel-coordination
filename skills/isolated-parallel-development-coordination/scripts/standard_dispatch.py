@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / 'src'))
 from core_runtime import Runtime
 from evidence import fingerprint, load_bound, ref, require, write_atomic
-from host_adapter import HostAdapter
+from host_adapter import HostAdapter, HostCallError
 from codex_parallel_coordination.bridge import ResourceBridge
 from codex_parallel_coordination.dispatch import StandardDispatch, approved_request
 from codex_parallel_coordination.resources import ArtifactCleanup, Controller
@@ -62,7 +62,7 @@ def main():
             raise ValueError('host result does not match pending operation')
         record(tool, 'result', reply)
         if 'error' in reply:
-            raise RuntimeError('host result unknown')
+            raise HostCallError(reply['error'])
         return reply['result']
     canonical_tools = [alias for alias, actual in NATIVE_TRANSPORT.items() if actual in tools]
     canonical_tools += [tool for tool in tools if tool not in NATIVE_TRANSPORT.values() and tool not in NATIVE_TRANSPORT]
@@ -74,7 +74,11 @@ def main():
     bridge = ResourceBridge(runtime, controller, artifacts, profile['evidence_root'])
     dispatch = StandardDispatch(runtime, bridge, git, developer, integration, host['user_origin'], profile['integration_target'])
     try:
-        result = dispatch.reconcile_host_result(request, bootstrap['reconcile_result']) if bootstrap.get('reconcile_result') else dispatch.run(request)
+        if bootstrap.get('rebase_queued') is True:
+            require(not bootstrap.get('reconcile_result'), 'separate queued rebase and host reconciliation required')
+            result = dispatch.rebase_queued(request, authorized=True)
+        else:
+            result = dispatch.reconcile_host_result(request, bootstrap['reconcile_result']) if bootstrap.get('reconcile_result') else dispatch.run(request)
     except Exception as error:
         record = runtime._load()['runtime']['operations'].get(request['request_id'])
         if not record or record.get('operation') != 'standard-dispatch':

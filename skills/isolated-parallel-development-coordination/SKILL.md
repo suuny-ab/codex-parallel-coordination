@@ -25,4 +25,6 @@ description: 主会话对齐需求并核对spec，用户批准拆合与派发摘
 
 已批准的单 spec 新需求可用[标准派工入口](references/standard-dispatch.md)，从冻结材料派生固定字段并组合原有登记、准入、实际宿主调用和集成交接。缺少 native 能力则报告具体边界，不把回调或夹具称为真正派发。
 
+已取得实际作者后，用[有限交接入口](references/task-handoff.md)接续一次受信观察及最终报告；未知不显示为未取得资源，缺必需 PR/源码绑定退回原作者，收件继续原有质量与独审关口。
+
 本 skill 不安装 hook/plugin，不运行 daemon、cron 或定时轮询，不保证闲置自动唤醒。真实宿主来源、终态和资源效果须实测；fixture、发送接受与历史通过不能冒充当前真实完成。能力及测试限制见[平台边界](references/platform-boundary.md)。旧轮次过程与撤回内容见[历史索引](references/history/index.md)，不作为当前授权。

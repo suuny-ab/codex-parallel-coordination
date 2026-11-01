@@ -276,7 +276,8 @@ class Runtime:
             try:
                 outcome = adapter.call('spawn' if spawn else 'send', target=target, message=message, authorized=authorized)
             except Exception as error:
-                outcome = dict(status='unknown', error_type=type(error).__name__)
+                from host_adapter import error_detail
+                outcome = dict(status='unknown', error_type=type(error).__name__, error=error_detail(error))
             record.update(outcome)
             if outcome['status'] == 'accepted':
                 if spawn:
@@ -310,7 +311,8 @@ class Runtime:
                     else:
                         record.update(status='accepted_unconfirmed', reason='message accepted; execution not observed running')
                 except Exception as error:
-                    record.update(status='accepted_unconfirmed', error_type=type(error).__name__)
+                    from host_adapter import error_detail
+                    record.update(status='accepted_unconfirmed', error_type=type(error).__name__, error=error_detail(error))
             if record['status'] != 'running':
                 task['worker_run']['reason'] = record.get('reason', record['status'])
             self._save(state, dict(op='launch-outcome', task_id=task_id, attempt_id=attempt_id))
@@ -319,6 +321,8 @@ class Runtime:
     def _launch_result(self, state, record):
         return dict(deepcopy(record), revision=state['revision'],
             public_progress='已实际开始执行。' if record['status']=='running' else
+                '已派发，执行状态待核实；由授权集成者观察原身份，不重复派发。' if
+                    record['status'] in ('intent','unknown','accepted_unconfirmed') else
                 '任务仍排队，尚未确认开始执行；'+record.get('reason',record['status']),
             slot_released=False)
 
@@ -367,6 +371,10 @@ class Runtime:
     def work_cycle(self, actor_id, *, observation_ref=None, collect=None, task_ids=None):
         from work_cycle import run
         return run(self, actor_id, observation_ref=observation_ref, collect=collect, task_ids=task_ids)
+
+    def handoff(self, task_id, actor_id, **options):
+        from task_handoff import run
+        return run(self, task_id, actor_id, **options)
 
     def feedback(self, command, actor_id, *, verify_display=None):
         """Record notification transport/display facts, never permissions or acceptance."""
@@ -729,6 +737,9 @@ def main():
     sub.add_parser('recover');sub.add_parser('capabilities');sub.add_parser('routing-status')
     work=sub.add_parser('work-cycle');work.add_argument('--actor',required=True);work.add_argument('--observation')
     work.add_argument('--task',action='append',dest='task_ids')
+    handoff=sub.add_parser('handoff');handoff.add_argument('--actor',required=True);handoff.add_argument('--task',required=True)
+    handoff.add_argument('--observation');handoff.add_argument('--report');handoff.add_argument('--payload')
+    handoff.add_argument('--tool',action='append',default=[],dest='available_tools')
     for name in ('apply','prepare','cycle','resolve-next','record-main','complete-read-only','routing','real-use','feedback'):
         cmd=sub.add_parser(name);cmd.add_argument('input');cmd.add_argument('--actor',required=True)
     args=p.parse_args();runtime=Runtime(args.state_root,args.project_root)
@@ -737,6 +748,9 @@ def main():
     elif args.command=='work-cycle':result=runtime.work_cycle(args.actor,
         observation_ref=ref(args.observation) if args.observation else None,task_ids=args.task_ids)
     elif args.command=='routing-status':result=runtime.routing_status()
+    elif args.command=='handoff':result=runtime.handoff(args.task,args.actor,available_tools=args.available_tools,
+        observation_ref=ref(args.observation) if args.observation else None,
+        report_ref=ref(args.report) if args.report else None,payload=load(args.payload) if args.payload else None)
     elif args.command=='capabilities':result=dict(idle_wakeup=False,callbacks_required_for_host_side_effects=True,global_install=False)
     elif args.command=='cycle':result=runtime.cycle(ref(args.input),args.actor)
     elif args.command=='record-main':result=runtime.record_main_inclusion(ref(args.input),args.actor)

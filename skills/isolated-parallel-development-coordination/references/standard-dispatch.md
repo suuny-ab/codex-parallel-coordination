@@ -21,6 +21,16 @@
 
 `approved_request` 从冻结文件派生其余字段。`acceptance_type` 必须是当前任务实际确认的 `delivery_verified` 或 `user_required`。同一请求始终使用相同 id 和字节；不能换 id 绕过 unknown、accepted_unconfirmed 或已经存在的作者。当前入口每次接收单 spec 的批准；已有多项摘要仍使用正式 routing 接口，不能拆写或伪造原批准。
 
+## 纯排队请求的技术重基线
+
+已登记的原 RESOURCE queued 请求遇 main 前进时，原主会话经当前明确的同范围技术重基线授权，可单独调用 `StandardDispatch.rebase_queued(original_request, authorized=True)`。受信 stdio 宿主对应 `new DispatchSession({...ORIGINAL_TRUSTED_HOST_OPTIONS, request: SAME_BOUND_REQUEST_REF, requestMeta: nodeRepl.requestMeta, rebaseQueued: true})`，外层仍设 `timeout_ms: 50000`，只取一次 `next()` 的 result。固定宿主 options 不能来自 task JSON；该布尔值是本次真实授权 sideband，不是文件自授权限。重基线与 reconcileResult 不能组合。
+
+此动作只检查并追加 `base_revisions` 指纹证据，返回原 queued 状态、effective_base_main 和空 host_actions，不创建树/分支、不调用 native、不申请或释放 permit。必需原 request digest、批准/spec/项目/路径/分支/作用域一致；CORE 原记录仍为 RESOURCE queued，尚无树/branch/资源/launch/host intent/作者；同一 RESOURCE 请求当前仍 queued 或已正常 granted；实际 local/remote main 一致，前一有效基线是当前 main 的祖先。任一条件不足即拒绝；unknown、已接受、已创建及活跃作者绝不适用。
+
+原 APPROVED/DISPATCH 请求及旧失败不改写。后续原调用方明确恢复正常 `DispatchSession`（不设 rebaseQueued），继续同一 request/task/attempt 和 RESOURCE 请求；入口每次重新核证基线链及当前 main，再从有效基线创建唯一原树，仍按真实准入和 host 结果推进。main 又前进时只能在仍满足纯排队条件下再追加一次，不换 ID 或自动轮询。没有该当前技术授权时保留 stale 提示，由集成者给原主会话最小步骤。
+
+检查期间不占用 CORE 长写锁等待 Git/网络；追加时用原 revision 核对，账本已变化则拒绝，保留并发变化及未登记的原证据。后续显式重新核实仍用原 request/task/attempt，新的观察证据带对应 revision，不覆盖先前文件。
+
 ## 当前宿主的有界接入
 
 `src/codex_parallel_coordination/dispatch.py` 的 `StandardDispatch.run` 复用 Runtime.routing/launch、ResourceBridge.prepare_development/admit、GitWorktrees.create 及原 CORE/RESOURCE 登记入口。新任务沿用 new-task/1；已有明确预留的登记不伪改成新建。输入文件不能指定 actor、state-root、授予权限或选择宿主可用能力。只接受当前原主会话 actor；固定 profile 来自受信宿主配置，不能从 task JSON 加载。现有全局 delivery 委托如果排除了主会话 launch，应先交集成者核实其授权边界，入口不冒用交付者身份。
@@ -36,7 +46,7 @@ Python 子进程不能直接调用当前 agent 的 native 工具。`scripts/disp
 ```javascript
 // 宿主先核对已审已装 binding 及 dispatch_entry.mjs 自身 hash，再从该安装路径导入。
 var {loadInstalledDispatch} = await import(VERIFIED_INSTALLED_ENTRY_URL);
-var {DispatchSession} = await loadInstalledDispatch(REVIEWED_INSTALLATION_BINDING);
+var {DispatchSession, serializeHostError} = await loadInstalledDispatch(REVIEWED_INSTALLATION_BINDING);
 var dispatchSession = new DispatchSession({
   python: FIXED_PYTHON_ABSOLUTE_PATH,
   profile: FIXED_HOST_PROFILE,
@@ -48,6 +58,8 @@ var dispatchSession = new DispatchSession({
 });
 nodeRepl.write(JSON.stringify(await dispatchSession.next()));
 ```
+
+上面初始化以及下方每次 `next/reply/verifyHostResult/interrupt` 的外层 Node 工具调用均显式使用 `timeout_ms: 50000`（模块 `NODE_CALL_TIMEOUT_MS` / `session.callTimeoutMs`）。它覆盖45秒会话截止、1秒子进程退出宽限及返回余量；不要用20秒或默认30秒调用等待这个会话。主动取消时显式 `await dispatchSession.interrupt()`，仅向本会话子进程送 EOF、等有界退出；硬 kernel reset 无法保证 finally 执行，遗留锁仍由集成者核原 owner，不自动抢锁。
 
 安装 binding 是集成者独审、安装核对后给受信宿主的 `source_root/source_head/files`，其中 files 是已审全源码的相对路径到 SHA256 映射。`dispatch_entry.mjs` 核对自身所在安装根、每个真实文件及指纹后才加载同一安装内的 host 模块；不回退到作者工作树。binding 不能来自任务 JSON，复制测试也不代表正式安装完成。
 
@@ -66,11 +78,15 @@ for (let count = 0; packet.kind === 'host_call' && count < 3; count++) {
   }
   let result, error = null;
   try { result = await tools[packet.tool](packet.arguments); }
-  catch { error = true; }
+  catch (failure) {
+    error = {name: failure?.name ?? null, message: failure?.message ?? String(failure),
+      code: failure?.code ?? null, string: String(failure)};
+  }
   const reply = await tools.mcp__node_repl__js({
     code: 'nodeRepl.write(JSON.stringify(await dispatchSession.reply(' +
       JSON.stringify(packet.tool) + ',' + JSON.stringify(result ?? null) + ',' +
       JSON.stringify(error) + ')))',
+    timeout_ms: 50000,
     title: 'Continue the same approved dispatch'
   });
   packet = JSON.parse(reply.content.find(b => b.type === 'text').text);
@@ -84,7 +100,9 @@ text(packet);
 
 同一 canonical `runtime.operations` 保存请求指纹、工作树意图、RESOURCE 许可、CORE launch 及交接意图；没有第二份任务队列。分支创建前核对本地与远端 main、真实路径和当前资源策略；只使用本次命令的 `-c core.longpaths=true`。已有工作树只有经原公开资源入口登记且与本次批准、路径和分支一致才可使用。
 
-`queued` 只表示准入等待；没有工作树或 host 调用。Git 创建丢响应后只观察已记录路径，核实实际分支和 HEAD 后继续，不重新 add。spawn 前落 launch intent；spawn 接受后在单独 observe 前持久化实际身份。`unknown/accepted_unconfirmed` 保留原操作和资源，不重发、不换 id。实际 running 才向已授权集成者发一次交接；接受交接不代表独审或最终交付。交接未知也不自动重发。
+`queued` 只表示准入等待；没有工作树或 host 调用。Git 创建丢响应后只观察已记录路径，核实实际分支和 HEAD 后继续，不重新 add。spawn 前落 launch intent；spawn 接受后在单独 observe 前持久化实际身份。`unknown/accepted_unconfirmed` 保留原操作和资源，不重发、不换 id，投影显示“已派发，执行状态待核实”。已知身份的后续观察及报告走[有限交接](task-handoff.md)。原入口实际 running 才向已授权集成者发一次交接；接受交接不代表独审或最终交付。交接未知也不自动重发。
+
+RESOURCE `granted` 只证明本实例准入，不保证原生宿主名额，也不推导全局容量。原生明确 `agent thread limit reached` / 对应容量代码保留原始异常和回执，返回 `capacity`；响应丢失等未知副作用仍为 `unknown`。两者均不自动重派、换 attempt 或释放资源；由集成者按真实事实核对下一动作。
 
 raw host intent/result 和准入、交接回执保存于 profile 的永久外部 evidence_root，带 SHA256 引用。CORE 的作者、任务阶段与资源归属仍为唯一权威。半途故障保留现场，使用同一请求恢复可确定步骤；需要观察的状态交集成者核实，正常保全/回收继续用现有生命周期入口。没有自动删除、回滚或历史修复。
 
