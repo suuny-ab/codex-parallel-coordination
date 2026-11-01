@@ -6,6 +6,7 @@ import test_core_runtime as core_tests
 import test_native_control as native_tests
 from coordination import new_state
 from evidence import artifact, load_bound, ref
+from resource_lifecycle import REFERENCE_FIELDS
 
 
 class PreservationRefs(core_tests.CoreFixture):
@@ -104,16 +105,22 @@ class PreservationRefs(core_tests.CoreFixture):
         captured['tasks']['A'] = dict(integration=dict(report=dict(
             path=str(self.root/'expired-fixture-integration.json'),sha256='0'*64)))
         missing_context = dict(path=str(self.root/'expired-request.json'),sha256='0'*64)
+        request_data = dict(request_id='captured',project_id='foreign-fixture-project',task_id='A',
+            requirement={},approval=missing_context,worktree='captured',branch='fixture')
+        captured_request = self.json('captured-request.json',request_data)
         trace = self.json('trace.json', dict(captured=captured,
             retained=dict(kind='result',result=dict(authority=missing_context)),
-            request=dict(request_id='captured',project_id='foreign-fixture-project',task_id='A',
-                requirement={},approval=missing_context,worktree='captured',branch='fixture'),
+            request=captured_request,
             source=dict(root=str(self.tree),kind='git',files=[missing_context],extra=[],digest='captured'),
             stored=dict(schema='dispatch-host-result/1',pending_packet=dict(request_ref=missing_context))))
         leaf = self.file('actual-evidence.txt')
         manifest = load_bound(self.preserve(dict(evidence=[trace, leaf])))
         self.assertTrue(any(row['original']==trace for row in manifest['files']))
         self.assertTrue(any(row['original']==leaf for row in manifest['files']))
+        captured_copy = next(row for row in manifest['files'] if row['original']==captured_request)
+        self.assertEqual(load_bound(captured_copy),request_data)
+        with self.assertRaisesRegex(ValueError,'artifact missing'):
+            self.preserve(dict(request=request_data),self.root/'inline-request')
         missing = dict(path=str(self.root/'missing-actual-evidence.txt'),sha256='0'*64)
         with self.assertRaisesRegex(ValueError, 'artifact missing'):
             self.preserve(dict(captured=captured,evidence=[missing]),self.root/'missing-actual')
@@ -170,9 +177,10 @@ class PreservationRefs(core_tests.CoreFixture):
         for label, metadata in (('result',dict(kind='result')),
                                 ('host',dict(schema='dispatch-host-result/1'))):
             for mode in ('missing','tampered'):
-                for grouped in (False,True):
-                    with self.subTest(label=label,mode=mode,grouped=grouped):
-                        name = label+'-'+mode+'-'+str(grouped)
+                for field, grouped in ((field,grouped) for field in ('evidence','proof','report','authority')
+                                       for grouped in (False,True)):
+                    with self.subTest(field=field,label=label,mode=mode,grouped=grouped):
+                        name = field+'-'+label+'-'+mode+'-'+str(grouped)
                         leaf = self.file(name+'.txt','Original required bytes')
                         if mode=='missing': Path(leaf['path']).unlink()
                         else: Path(leaf['path']).write_text('changed',encoding='utf-8')
@@ -181,7 +189,7 @@ class PreservationRefs(core_tests.CoreFixture):
                         before = self.runtime.path.read_bytes()
                         destination = self.root/name
                         with self.assertRaisesRegex(ValueError,'artifact missing|hash mismatch'):
-                            self.preserve(dict(evidence=[wrapper]),destination)
+                            self.preserve({field:[wrapper] if field=='evidence' else wrapper},destination)
                         self.assertEqual(self.runtime.path.read_bytes(),before)
                         self.assertFalse((destination/'preservation.json').exists())
                         self.assertFalse(self.runtime._load()['tasks']['A'].get('preservation'))
@@ -194,6 +202,20 @@ class PreservationRefs(core_tests.CoreFixture):
         data = dict(path=str(self.root/'ordinary-inventory.txt'),sha256='0'*64)
         wrapper = dict(kind='result',groups=[[dict(schema='dispatch-host-result/1',
             inventory=[data],evidence=[leaf,leaf])]])
-        manifest = load_bound(self.preserve(dict(evidence=[wrapper])))
-        self.assertEqual(sum(row['original']==leaf for row in manifest['files']),1)
-        self.assertFalse(any(row['original']==data for row in manifest['files']))
+        for field in ('evidence','proof','report','authority'):
+            with self.subTest(field=field):
+                manifest = load_bound(self.preserve({field:[wrapper] if field=='evidence' else wrapper},
+                    self.root/('valid-'+field)))
+                self.assertEqual(sum(row['original']==leaf for row in manifest['files']),1)
+                self.assertFalse(any(row['original']==data for row in manifest['files']))
+
+    def test_all_existing_reference_slots_reject_missing_inline_evidence(self):
+        for field in sorted(REFERENCE_FIELDS):
+            with self.subTest(field=field):
+                missing = dict(path=str(self.root/'missing-inline.txt'),sha256='0'*64)
+                before = self.runtime.path.read_bytes()
+                with self.assertRaisesRegex(ValueError,'artifact missing'):
+                    self.preserve({field:dict(kind='result',evidence=[missing])},self.root/('slot-'+field))
+                self.assertEqual(self.runtime.path.read_bytes(),before)
+                self.assertFalse((self.root/('slot-'+field)/'preservation.json').exists())
+                self.assertTrue(self.tree.exists())

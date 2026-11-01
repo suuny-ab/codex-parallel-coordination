@@ -246,8 +246,7 @@ def preserve(runtime, task_id, destination, handoff, actor, *, merge_verificatio
                 for key, nested in value.items():
                     # A preserved copy's original is an identity, not a live dependency.
                     if not (reference and key == 'original'):
-                        copy(nested, key in REFERENCE_FIELDS, declared or key in
-                             ('evidence','artifacts','backup_evidence','installation_evidence','real_task_evidence','raw_journals','specs'))
+                        copy(nested, key in REFERENCE_FIELDS, declared or key in REFERENCE_FIELDS)
             elif isinstance(value, list):
                 for nested in value: copy(nested, required, declared)
         copy(preserved_binding(task)); copy(handoff, True); copy(list(extra), True, True);copy(remote_verification, True)
