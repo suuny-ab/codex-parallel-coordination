@@ -15,6 +15,10 @@ description: 主会话对齐需求并核对spec，用户批准拆合与派发摘
 
 ## 工作入口
 
+已有配置和唯一账本的项目，开始或结束工作先用 `Runtime.work_cycle` / `core_runtime.py work-cycle`（见 [CORE 接口](references/core-runtime.md#一轮工作入口)）。主会话用真实主身份只读摘要；当前集成者提交本次观察或调用一次受信宿主采集回调，入口复用原收件、closeout 和进度投影，以同一 revision 返回至多一个用户事项、下一责任及开发/交付/清理摘要。没有新观察保留最后登记，不把历史运行当实时；缺能力明确交当前集成者核实，不让主会话冒用集成身份。
+
+返回摘要不等于已经呈现、验收或激活人事项；实际呈现后仍沿用 next/wait/resolve-next。没有用户事项也使用返回的简短 text 收尾。`completed` 加 `pending_cleanup` 表示开发交付完成但仍待清理；旧机器 action=idle 不代表所有工作结束。入口不自动派发、清理、关闭执行者或循环等待。
+
 首版公开入口为 Python 3.11+ 标准库工具 `scripts/core_runtime.py`，先读[CORE 接口](references/core-runtime.md)。state-root 由受信插件 profile 固定，按规范化项目根路径派生唯一账本；报告只是指纹证据，不另存任务队列。原 `scripts/coordination.py` 及[状态协议](references/state-protocol.md)保留离线诊断/兼容，不能另建并行生产账本。Windows 核实解释器，命令加 `-B`；项目参数不写入通用 skill。
 
 1. 确认范围、非目标、验收条件、用户开工指令、资源归属及保护边界，通过 `Runtime.routing` 保存讨论/spec核对、摘要与用户审批、指令归属和限定动作；`prepare` 排队，`launch(route_id=...)` 在调用宿主前重验当前依据。资源准入及宿主实际运行观察齐全才记 running；发送接受不代表运行或交付，spawn 满额即时给真实排队原因，不自动关闭执行者。外部已经发生的真实派发用 `bind_observed_dispatch` 核原批准及当前观察后登记，不伪造 launch、准入或完成。工作 agent 自行准备隔离工作树、数据副本、端口、缓存；共享资源只读复用，重型任务遵守项目互斥。

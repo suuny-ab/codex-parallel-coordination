@@ -24,6 +24,40 @@ cycle 使用原 coordination-closeout/1 观察：先收件/drain，再验终态�
 
 ## Python 宿主接口
 
+### 一轮工作入口
+
+已配置项目的工作开始/结束使用同一入口，不重新初始化账本。从插件根执行（`python` 须指向已核实的解释器）：
+
+```text
+python -X utf8 -B skills/isolated-parallel-development-coordination/scripts/core_runtime.py --state-root ABS_PROFILE_STATE --project-root ABS_PROJECT work-cycle --actor ACTUAL_MAIN_ID
+python -X utf8 -B skills/isolated-parallel-development-coordination/scripts/core_runtime.py --state-root ABS_PROFILE_STATE --project-root ABS_PROJECT work-cycle --actor ACTUAL_DELIVERY_ID --observation ABS_CURRENT_OBSERVATION.json
+python -X utf8 -B skills/isolated-parallel-development-coordination/scripts/core_runtime.py --state-root ABS_PROFILE_STATE --project-root ABS_PROJECT work-cycle --actor ACTUAL_TASK_REVIEWER_ID --task ACTUAL_TASK_ID --observation ABS_CURRENT_OBSERVATION.json
+```
+
+第一种只读；未提交本次观察时，即使保留的 last_reconcile 指纹仍有效，也标记为最后登记，当前执行计数为 null。第二种仅当前技术写入角色可调用，复用 `coordination-closeout/1` 输入及原来源/修订/委托/幂等校验。原主会话不能带观察代替当前集成者写入。
+
+技术身份沿用两条既有通路：已配置 global delivery 时保持原 cycle 校验；没有 global delivery、已有 `bind_observed_dispatch` 登记时，复核原 approved-dispatch-plan/1、真实派发绑定、作者/工作树/分支及 executor generation，只有其已批准 reviewer 能收取绑定的 task scope。不会把任务收件授权变成全局角色，不要求补造 required_ci_jobs、CI pipeline 或全局 delegate。主会话可从同一合法绑定读到当前任务的集成责任。过期批准/派发依据、作者冒认、其它任务输入均拒绝，采集前及持锁消费前都重验。没有任何已绑定派发的旧未委托账本才保留原 cycle 的角色校验。
+
+任务收件通路在现有 closeout 中复用 `receive_observed`，只消费本范围的当前来源回执和原缓冲，不运行全局 drain，也不修改其它任务。worker 携 receipt 时，evidence 必须是现有 observed_execution 可核的真实终态快照；inbox.messages 中的任务回执需带对应 origin_observation ref。发送接受或文件报告不能代替真实终态来源。observation.task_scope 和 next_action.task_ids 说明责任与覆盖边界；其它任务仅保留最后登记，不从当前任务授权推导旧任务的清理权。
+
+任务收件者可用 `task_ids=[actual_task_id]` / 重复 `--task` 将本轮限定在已绑定任务；省略时仅使用该真实收件者当前已核实的任务授权集合。该参数不能新授任务权或代替 global delivery，也不允许与全局委托混用；主会话相同参数只筛选责任摘要，仍不写技术状态。全项目摘要继续只读展示其它任务及未知清理责任，不把局部观察当整项目当前覆盖。
+
+受信宿主可一次调用 `runtime.work_cycle(actual_delivery_id, collect=collect_once)`；回调收到 project_id、coordinator_id、recipient_agent_id、based_on_revision、task_scope 及本范围 tasks 的副本，返回当前 observation 文件的 hash 绑定 ref，或缺能力时返回 None。回调由宿主代码绑定实际可用且已授权的收件和有限快照能力，将本次已收到的消息、已授权原执行者状态及覆盖证据组成原 closeout 格式；不能从 JSON 的工具名或 actor 自授权限。入口只调用回调一次，不等待后续事件、不枚举其它项目/进程，不自装宿主能力；没有采集适配器时直接用只读形式，缺口及下一责任仍会返回。消息发送接受、状态 completed、not_found 均不证明资源关闭。文件 fixture 必须声明 mode=fixture，不能标成真实宿主快照。
+
+```python
+# 已安装 skill 的 scripts 在当前受信宿主的 import 路径内。
+result = runtime.work_cycle(actual_main_id)  # 读同一账本，无技术写入。
+# 或由当前授权集成者调用；collect_once 是宿主绑定的有限采集函数。
+result = runtime.work_cycle(actual_delivery_id, collect=collect_once)
+print(result['text'])
+```
+
+结果 schema 为 `coordination-work-cycle/1`。revision、summary、progress、reconciliation（若本轮对账）来自同一加载/保存版本；观察源、覆盖模式、observed_task_ids 和 issues 在 observation 中保留。`fixture_only` 只是测试；当前声明也不证明宿主身份认证、后续事件覆盖或闲置唤醒。采集期间 revision 被其它合法写入改变时拒绝旧观察，不覆盖新账本、不循环重试。
+
+`user_item` 为至多一项已就绪人事项，优先保留 active；否则沿原优先级/FIFO。`delivered_to_user=false`，计算摘要不会 next/wait/accept；主会话实际呈现后沿现有入口登记，回答后用 resolve-next。失效的 active 仍留 human_focus，但不把失效验收递给用户。`next_action.kind` 为 needs_user、needs_delivery、waiting 或 no_pending_work；owner 指向主会话或当前授权集成者，无集成身份时明确待核实，技术缺口不自动变用户审批。
+
+`progress.tasks` 复用原业务任务归属和阶段，每行附 development（实现/自测）、delivery（审核/集成/合入）及 cleanup。代码完成但 pending_cleanup、历史完成却缺清理记录，均不返回 all_work_finished=true；原 summary.action=idle 保留原机器语义。清理只展示，仍走原生命周期门禁及独立授权。`text` 是供主会话直接使用的简短进度，技术引用留在结构化字段。整批代码完成通知限定 scope=development_delivery，额外列 cleanup_pending/all_work_finished，不能据此宣称所有收尾完成。
+
 ```python
 from core_runtime import Runtime
 from host_adapter import HostAdapter
