@@ -216,10 +216,10 @@ class StandardDispatch:
                     continue
                 self._route(identity, command, self.origin if command['op'] == 'approve' else None)
             if task_id not in self.runtime._load()['tasks']:
-                self.runtime.prepare(dict(task_id=task_id, title=item['name'], worktree=request['worktree'],
+                self.bridge.prepare_development(dict(task_id=task_id, title=item['name'], worktree=request['worktree'],
                     branch=request['branch'], task_kind='code', acceptance_type=request['acceptance_type'],
                     scope=item['scope'], acceptance=item['acceptance'], user_reference=request['approval']['path'],
-                    report_path=request['report_path']), self.actor)
+                    report_path=request['report_path']), self.actor, authority_ref=request['approval'])
             elif not self.runtime._load()['tasks'][task_id].get('routing'):
                 self._route(identity, dict(op='adopt', task_id=task_id))
             if rights:
@@ -242,7 +242,8 @@ class StandardDispatch:
                 self._record(identity, worktree_intent=dict(path=request['worktree'], branch=request['branch'], base=request['base_main']))
                 if not reserved:
                     try:
-                        self.git._git('worktree', 'add', '-b', request['branch'], request['worktree'], request['base_main'])
+                        self.git.create(dict(path=request['worktree'], metadata=dict(repository_root=str(self.git.repository))),
+                                        request['branch'], request['base_main'])
                     except (subprocess.SubprocessError, OSError) as error:
                         self._record(identity, status='worktree_unknown', error_type=type(error).__name__)
                         return self.status(identity)
@@ -252,7 +253,7 @@ class StandardDispatch:
             self._register(request, dict(id=task_id + ':worktree', kind='worktree', path=request['worktree']))
             self.bridge.artifacts.register(dict(resource_id=task_id + ':worktree', project_id=self.runtime.project_id,
                 task_id=task_id, attempt_id=attempt, kind='git_worktree', path=request['worktree'], references=[task_id],
-                protected=False, metadata=dict(repository_root=str(self.git.repository), expected_head=request['base_main'])))
+                protected=False, metadata=dict(repository_root=str(self.git.repository), branch='refs/heads/' + request['branch'])))
             message = '\n'.join([f"Task {task_id}: {item['name']}", f"Project: {self.runtime.project_root}",
                 f"Worktree: {request['worktree']}\nBranch: {request['branch']}\nBase main: {request['base_main']}",
                 f"Read spec: {request['requirement']['spec']['path']}", item['scope'],
@@ -275,9 +276,13 @@ class StandardDispatch:
             return self._finish(request, self.runtime._load()['runtime']['operations'][identity])
 
     def _register(self, request, resource):
-        existing = self.runtime._load()['runtime'].get('resources', {}).get(resource['id'])
+        state = self.runtime._load()
+        existing = state['runtime'].get('resources', {}).get(resource['id'])
         if existing:
-            require(existing['task_id'] == request['task_id'] and existing['authority'] == request['approval'] and
+            authorities = [request['approval']]
+            if resource['kind'] == 'agent':
+                authorities.append(state['runtime']['executors'][resource['executor_id']]['authority'])
+            require(existing['task_id'] == request['task_id'] and existing['authority'] in authorities and
                     all(Path(existing[k]).resolve() == Path(v).resolve() if k == 'path' else existing.get(k) == v
                         for k, v in resource.items()), 'existing resource differs')
             return
@@ -285,6 +290,8 @@ class StandardDispatch:
 
     def _finish(self, request, old):
         identity, task_id = request['request_id'], request['task_id']
+        if old.get('retained_host_results'):
+            return self.status(identity)  # Evidence retention never resumes host actions.
         state = self.runtime._load()
         outcome = state['runtime']['operations'].get(identity + ':launch')
         if not outcome:
@@ -308,7 +315,7 @@ class StandardDispatch:
         require(load_bound(request['approval'])['integration_agent'] == request['integration_agent'], 'integration authority changed')
         require(request['integration_agent'] == self.integration_target, 'integration differs from trusted host recipient')
         self._record(identity, handoff_intent=True, status='handoff_unknown')
-        message = f"Dispatched {task_id}; author {owner}; worktree {request['worktree']}; branch {request['branch']}; report {request['report_path']}. Independently review the final source/evidence; maintain the original PR and approved gates."
+        message = self._handoff_message(request, owner)
         try:
             result = self.integration.call('send', target=request['integration_agent'], message=message, authorized=True)
         except Exception as error:
@@ -317,6 +324,87 @@ class StandardDispatch:
         self._record(identity, handoff=result, handoff_evidence=evidence,
             status='dispatched' if result['status'] == 'accepted' else 'handoff_unknown')
         return self.status(identity)
+
+    def _handoff_message(self, request, owner):
+        return f"Dispatched {request['task_id']}; author {owner}; worktree {request['worktree']}; branch {request['branch']}; report {request['report_path']}. Independently review the final source/evidence; maintain the original PR and approved gates."
+
+    def reconcile_host_result(self, request, result_ref):
+        """Retain a known result of this current uncertain dispatch; no host calls.
+
+        The trusted caller supplies its original request and durable transport
+        receipt. A late spawn can bind its actual owner, never running/finished.
+        """
+        if 'spec_check' in request:
+            request = approved_request(request)
+        with writer_lock(self.runtime.directory / 'standard-dispatch-driver'):
+            state = self.runtime._load()
+            self.runtime._actor(state, self.actor, control=True)
+            identity, task_id = request['request_id'], request['task_id']
+            old = state['runtime']['operations'][identity]
+            require(old.get('operation') == 'standard-dispatch' and old['request_digest'] == fingerprint(request) and
+                    old.get('launch_started') and old['status'] != 'dispatched' and
+                    state['tasks'][task_id]['phase'] not in ('completed', 'cancelled'), 'current uncertain dispatch required')
+            require(Path(result_ref['path']).resolve().is_relative_to(self.bridge.evidence.resolve()),
+                    'host result outside trusted external evidence root')
+            journal = load_bound(result_ref)
+            packet, response = journal['pending_packet'], journal['response']
+            context = packet['context']
+            require(journal.get('schema') == 'dispatch-host-result/1' and journal['actor_id'] == self.actor and
+                    journal['request_id'] == context['request_id'] == identity and context['project_id'] == self.runtime.project_id and
+                    context['task_id'] == task_id and context['request_digest'] == fingerprint(request), 'host result dispatch binding differs')
+            original_request = load_bound(context['request_ref'])
+            if 'spec_check' in original_request:
+                original_request = approved_request(original_request)
+            require(original_request == request, 'host result references another request')
+            intent = load_bound(context['intent'])
+            require(intent['tool'] == packet['tool'] == response['tool'] and intent['arguments'] == packet['arguments'] and
+                    intent['context'] == {k: v for k, v in context.items() if k != 'intent'} and
+                    response['kind'] == 'host_result', 'host result differs from original pending intent')
+            launch = state['runtime']['operations'][identity + ':launch']
+            require(launch['task_id'] == task_id and launch['operation'] == 'spawn', 'original spawn intent missing')
+            route = state['runtime']['intake']['routes'][launch['route_id']]
+            owner = state['tasks'][task_id]['owner_agent_id']
+            stage, actual = context['stage'], journal['actual_agent_id']
+            require(context['operation_id'] == identity + (':handoff' if stage == 'handoff' else ':launch'),
+                    'host result operation differs')
+            if stage == 'spawn':
+                require(packet['tool'] == 'multi_agent_v1__spawn_agent' and intent['canonical_tool'] == 'spawn_agent' and
+                        packet['arguments'] == dict(message=route['message']), 'spawn result differs from original route')
+                from host_adapter import unwrap
+                raw = unwrap(response['result']) if not response.get('error') else {}
+                returned = raw.get('agent_id', raw.get('id')) if not raw.get('error') else None
+                require(returned == actual and (actual is None or isinstance(actual, str) and actual.strip()),
+                        'actual spawn identity differs from raw host result')
+            elif stage == 'observe':
+                require(owner is not None, 'observation has no known executor')
+                target = state['runtime']['executors'][owner]['routes']['native_agent']['target_id']
+                require(packet['tool'] == 'multi_agent_v1__wait_agent' and intent['canonical_tool'] == 'wait_agent' and
+                        packet['arguments'] == dict(targets=[target], timeout_ms=10000) and actual == target,
+                        'observation differs from registered executor')
+            else:
+                message = self._handoff_message(request, owner)
+                expected = dict(threadId=self.integration_target, prompt=message) if self.integration.channel == 'app_thread' else dict(
+                    id=self.integration_target, message=message, interrupt=False)
+                require(stage == 'handoff' and old.get('handoff_intent') and packet['tool'] == self.integration.names['send'] and
+                        packet['arguments'] == expected and actual is None and request['integration_agent'] == self.integration_target,
+                        'handoff result differs from original recipient')
+            retained = deepcopy(old.get('retained_host_results', {}))
+            if stage in retained:
+                require(retained[stage] == result_ref, 'conflicting retained host result')
+                return self.status(identity)
+            if stage == 'spawn' and actual:
+                executor_id = 'native_agent:' + actual
+                require(owner in (None, executor_id), 'late result cannot replace an existing owner')
+                self.runtime.bind_executor(executor_id, {'native_agent': dict(target_id=actual, host_id='current')},
+                    self.actor, result_ref, task_id=task_id)
+                executor = self.runtime._load()['runtime']['executors'][executor_id]
+                self._register(request, dict(id=task_id + ':agent', kind='agent', executor_id=executor_id,
+                                             generation=executor['generation']))
+            retained[stage] = result_ref
+            self._record(identity, retained_host_results=retained, status='needs_reconcile',
+                reason='Known host result retained; execution/delivery not inferred', next_action='observe_existing_executor_or_delivery',
+                next_owner=self.integration_target)
+            return self.status(identity)
 
     def status(self, identity):
         state = self.runtime._load()

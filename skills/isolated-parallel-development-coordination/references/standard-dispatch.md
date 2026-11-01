@@ -23,13 +23,13 @@
 
 ## 当前宿主的有界接入
 
-`src/codex_parallel_coordination/dispatch.py` 的 `StandardDispatch.run` 复用 Runtime.routing/prepare/launch、Runtime.register_resource、ResourceBridge.admit 和 ArtifactCleanup.register。输入文件不能指定 actor、state-root、授予权限或选择宿主可用能力。只接受当前原主会话 actor；固定 profile 来自受信宿主配置，不能从 task JSON 加载。现有全局 delivery 委托如果排除了主会话 launch，应先交集成者核实其授权边界，入口不冒用交付者身份。
+`src/codex_parallel_coordination/dispatch.py` 的 `StandardDispatch.run` 复用 Runtime.routing/launch、ResourceBridge.prepare_development/admit、GitWorktrees.create 及原 CORE/RESOURCE 登记入口。新任务沿用 new-task/1；已有明确预留的登记不伪改成新建。输入文件不能指定 actor、state-root、授予权限或选择宿主可用能力。只接受当前原主会话 actor；固定 profile 来自受信宿主配置，不能从 task JSON 加载。现有全局 delivery 委托如果排除了主会话 launch，应先交集成者核实其授权边界，入口不冒用交付者身份。
 
 Python 子进程不能直接调用当前 agent 的 native 工具。`scripts/dispatch_host.mjs` 提供当前 `node_repl` + `functions.exec` 的实际 stdio 通路：
 
 1. 在 `node_repl` 导入受信插件内的 `DispatchSession`，传入固定 profile、明确 Python 绝对路径、绑定请求和 **`nodeRepl.requestMeta`**。actor 使用实际 `threadId`，不使用可能属于父会话的 `sessionId`。`approvalOrigin` 是主会话核对直接用户批准后给出的受信 sideband `{role:'user',conversation_id:实际主会话,reference:原批准ref}`，不能从请求文件自取。
 2. Python 先完成准入核验，再输出一次 host_call；functions 宿主只调用真实暴露的工具并返回未经伪造的原始结果。下面的通用驱动可反复使用，不生成逐任务 Python 脚本。
-3. 最多执行 spawn、observe、integration-send 三个 host_call，整个子进程上限45秒。到期结束本次进程，保留 canonical intent/unknown；没有常驻服务、后台队列、自动唤醒或自动重发。
+3. 最多执行 spawn、observe、integration-send 三个 host_call，宿主会话45秒截止。截止时关闭输入，给当前子进程至多1秒释放其写锁再结束；没有常驻服务、后台队列、自动唤醒或自动重发。
 
 初始化示例（参数由受信主会话提供，省略项目特定值）：
 
@@ -87,5 +87,9 @@ text(packet);
 `queued` 只表示准入等待；没有工作树或 host 调用。Git 创建丢响应后只观察已记录路径，核实实际分支和 HEAD 后继续，不重新 add。spawn 前落 launch intent；spawn 接受后在单独 observe 前持久化实际身份。`unknown/accepted_unconfirmed` 保留原操作和资源，不重发、不换 id。实际 running 才向已授权集成者发一次交接；接受交接不代表独审或最终交付。交接未知也不自动重发。
 
 raw host intent/result 和准入、交接回执保存于 profile 的永久外部 evidence_root，带 SHA256 引用。CORE 的作者、任务阶段与资源归属仍为唯一权威。半途故障保留现场，使用同一请求恢复可确定步骤；需要观察的状态交集成者核实，正常保全/回收继续用现有生命周期入口。没有自动删除、回滚或历史修复。
+
+`reply` 对匹配的 pending packet **先持久化原始结果**，再判断会话是否截止或子进程是否退出。原子外部 journal 绑定原请求、任务/项目、操作、工具/实参、原始返回和已知实际 agent ID；相同迟到结果复用原文件，冲突结果拒绝覆盖。正常回复也先落同样证据，才继续 Python。截止或退出后只返回 `needs_reconcile`、结果指纹及核证入口，不续派、不重发，不据迟到观察宣称 running 或交接完成。
+
+原受信 caller 可显式调用 `await dispatchSession.verifyHostResult(nodeRepl.requestMeta)`：使用已保留请求/结果，等当前子进程退出后，通过 `StandardDispatch.reconcile_host_result` 核对原 canonical intent。当前未知 spawn 的真实 ID 经原 `bind_executor/register_resource` 入口保留归属，仍保持 `needs_reconcile` 和执行未知；核证不调用任何 native 工具。同一请求再次 run 也不续派。若子进程被强杀留下原写锁，保留 journal 和实际 ID，明确由集成者核对原锁 owner；不自动抢锁、删锁或修复历史资源。原对象不可用时，受信 host 用同一 profile/request 加 `reconcileResult: 返回的host_result指纹` 创建有限核证会话，不重新填写任务材料。
 
 验证分开报告：真实 Git/RESOURCE 与 stdio 桥接、synthetic native fixtures、当前宿主可用能力、真实新任务派发。最终一项只有合入并按独立授权更新本机后，以另行获批的新开发需求验证；不得为验工具自造任务。

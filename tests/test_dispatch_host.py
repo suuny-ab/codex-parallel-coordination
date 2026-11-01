@@ -63,6 +63,10 @@ console.log(JSON.stringify({packet, calls, argumentsUsed}));
         self.assertEqual(receipts[2]['tool'], 'multi_agent_v1__wait_agent')
         self.assertEqual(receipts[2]['arguments'], result['argumentsUsed'][1])
         self.assertEqual(receipts[3]['result'], dict(status={'synthetic-stdio-agent': 'running'}, timed_out=True))
+        transport = [load_bound(r) for r in result['packet']['result']['transport_evidence']]
+        self.assertEqual(len(transport), 3)
+        self.assertEqual(transport[0]['response']['result'], dict(agent_id='synthetic-stdio-agent'))
+        self.assertEqual(transport[0]['pending_packet']['context']['request_id'], self.fixture.request['request_id'])
 
     def test_real_thread_id_wins_over_parent_session_id(self):
         self.config['requestMeta'] = dict(threadId='developer', sessionId=self.fixture.actor)
