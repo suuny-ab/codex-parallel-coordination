@@ -4,6 +4,8 @@
 
 首次使用先确认 Python 3.12+；Windows 受管进程隔离还需要 Job Object。运行时使用标准库。插件不提供空闲自动唤醒，不安装 hook 或运行后台轮询。
 
+单 spec 摘要批准后可调用[标准派工入口](skills/isolated-parallel-development-coordination/references/standard-dispatch.md)：固定请求复用 CORE/RESOURCE 并通过有界宿主桥接执行实际工具。缺少真实宿主能力时明确受阻。
+
 | 你现在要做什么 | 阅读入口 |
 | --- | --- |
 | agent 执行协调任务 | [SKILL：共同边界及角色选择](skills/isolated-parallel-development-coordination/SKILL.md)，然后只读本角色当前阶段 |
