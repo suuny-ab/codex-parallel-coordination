@@ -104,7 +104,7 @@ text(packet);
 
 原受信宿主仍持有原 `DispatchSession` 对象时，可以显式执行 `var resumed = await dispatchSession.resumePrehost(nodeRepl.requestMeta)`，再用上面的固定驱动调用 `resumed.next/reply`。外层继续使用 `timeout_ms: 50000`，新的有限接续仍为原 45 秒上限；不会自动循环重启。并发/重复调用原对象的恢复方法返回同一接续对象。旧版本真实实例可由已审新模块执行 `DispatchSession.prototype.resumePrehost.call(originalSession, nodeRepl.requestMeta)`；必须先核对原对象、原请求/批准/profile及两版源码来源，不接受同形 plain object 或任务文件替代。
 
-恢复仅适用于原子进程已实际退出、原会话已结束、已暴露 host packet 数为零，且没有 pending/reply/retained result 的情况。原对象将实际终态写入永久 evidence_root，并以私有宿主 sideband 传给接续入口；单独一份声称零调用的 JSON 不授予恢复权限。CORE 在锁内再次核对原请求、actor、owner journal 的 PID/创建身份及死亡状态、原 intent/route/许可/任务版本、当前 RESOURCE granted，以及不存在 callback/host intent/result/实际 owner。缺 marker 只是必要条件，不能单独证明未调用。
+恢复仅适用于原子进程已实际退出、原会话已结束、已暴露 host packet 数为零，且没有 pending/reply/retained result 的情况。原对象将实际终态写入永久 evidence_root，并以私有宿主 sideband 传给接续入口；单独一份声称零调用的 JSON 不授予恢复权限。生成 sideband 的实现只存在于模块闭包，不暴露可绕过来源门禁的 prototype helper。CORE 在锁内再次核对原请求、actor、owner journal 的 PID/创建身份及死亡状态、原 intent/route/许可/任务版本、当前 RESOURCE granted，以及不存在 callback/host intent/result/实际 owner。缺 marker 只是必要条件，不能单独证明未调用。
 
 通过后复用原 request/task/attempt、工作树和许可，保存原 intent 快照及恢复证据；不删除原失败或申请/释放许可。已有 callback、真实身份、丢失/迟到返回、仍活跃/未知进程、PID复用、错误请求/项目/任务、变更路由/权限、缺失或冲突来源均拒绝恢复，不重发。原对象丢失或来源不足时保留未知，由获权 ROOT/集成者核证，不以新文件重建宿主对象。一次接续若再次中断，不自动或反复重置 intent。
 

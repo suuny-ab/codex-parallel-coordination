@@ -256,35 +256,36 @@ export class DispatchSession {
     if (this.prehostContinuation) return this.prehostContinuation;
     // Assign the promise before filesystem waits so concurrent explicit resumes
     // share one continuation, not two children or two candidate spawns.
-    this.prehostContinuation = DispatchSession.prototype.continuePrehost.call(this, requestMeta);
+    this.prehostContinuation = continuePrehost.call(this, requestMeta);
     return this.prehostContinuation;
   }
+}
 
-  async continuePrehost(requestMeta) {
-    const owners = [];
-    for (const name of await readdir(this.evidenceRoot)) {
-      if (!/^host-owner-.*\.json$/.test(name)) continue;
-      const target = path.join(this.evidenceRoot, name);
-      const bytes = await readFile(target);
-      const owner = JSON.parse(bytes.toString('utf8'));
-      if (owner.process?.pid === this.child.pid && owner.binding?.actor_id === this.actorId &&
-          stable(owner.binding?.request_ref) === stable(this.options.request)) {
-        owners.push({value: owner, ref: {path: target, sha256: createHash('sha256').update(bytes).digest('hex')}});
-      }
+// Only the guarded entry can mint sideband; old instances need no new private brand.
+async function continuePrehost(requestMeta) {
+  const owners = [];
+  for (const name of await readdir(this.evidenceRoot)) {
+    if (!/^host-owner-.*\.json$/.test(name)) continue;
+    const target = path.join(this.evidenceRoot, name);
+    const bytes = await readFile(target);
+    const owner = JSON.parse(bytes.toString('utf8'));
+    if (owner.process?.pid === this.child.pid && owner.binding?.actor_id === this.actorId &&
+        stable(owner.binding?.request_ref) === stable(this.options.request)) {
+      owners.push({value: owner, ref: {path: target, sha256: createHash('sha256').update(bytes).digest('hex')}});
     }
-    if (owners.length !== 1) throw new Error('unique original host owner source required');
-    const proof = {schema: 'dispatch-prehost-terminal/1', binding: owners[0].value.binding, owner: owners[0].ref,
-      child_pid: this.child.pid, closed: true, exit_code: this.child.exitCode, signal: this.child.signalCode,
-      host_calls: this.calls, pending: this.pending, result_refs: [...this.resultRefs], scope: this.options.testingScope};
-    const bytes = JSON.stringify(proof, null, 2) + '\n';
-    const target = path.join(this.evidenceRoot, 'prehost-terminal-' + createHash('sha256').update(bytes).digest('hex') + '.json');
-    try {
-      const file = await open(target, 'wx');
-      try { await file.writeFile(bytes); await file.sync(); } finally { await file.close(); }
-    } catch (error) {
-      if (error.code !== 'EEXIST' || await readFile(target, 'utf8') !== bytes) throw error;
-    }
-    const terminal = {path: target, sha256: createHash('sha256').update(bytes).digest('hex')};
-    return new DispatchSession({...this.options, requestMeta, [prehostRecovery]: terminal});
   }
+  if (owners.length !== 1) throw new Error('unique original host owner source required');
+  const proof = {schema: 'dispatch-prehost-terminal/1', binding: owners[0].value.binding, owner: owners[0].ref,
+    child_pid: this.child.pid, closed: true, exit_code: this.child.exitCode, signal: this.child.signalCode,
+    host_calls: this.calls, pending: this.pending, result_refs: [...this.resultRefs], scope: this.options.testingScope};
+  const bytes = JSON.stringify(proof, null, 2) + '\n';
+  const target = path.join(this.evidenceRoot, 'prehost-terminal-' + createHash('sha256').update(bytes).digest('hex') + '.json');
+  try {
+    const file = await open(target, 'wx');
+    try { await file.writeFile(bytes); await file.sync(); } finally { await file.close(); }
+  } catch (error) {
+    if (error.code !== 'EEXIST' || await readFile(target, 'utf8') !== bytes) throw error;
+  }
+  const terminal = {path: target, sha256: createHash('sha256').update(bytes).digest('hex')};
+  return new DispatchSession({...this.options, requestMeta, [prehostRecovery]: terminal});
 }

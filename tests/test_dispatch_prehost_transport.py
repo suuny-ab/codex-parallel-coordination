@@ -17,7 +17,7 @@ class PrehostTransport(unittest.TestCase):
         self.host.setUp()
         self.addCleanup(self.host.doCleanups)
 
-    def probe(self, legacy=False):
+    def probe(self, legacy=False, negative=None):
         f = self.host.fixture
         folder = f.root/'owned-host'
         folder.mkdir()
@@ -68,11 +68,38 @@ standard_dispatch.main()
         capacity_count = len(f.controller.read()[0]['capacity_requests'])
         code = """
 import fs from 'node:fs';
-const {DispatchSession,HOST_DEADLINE_MS} = await import(MODULE);
+import childProcess from 'node:child_process';
+import {syncBuiltinESMExports} from 'node:module';
+const hostModule = await import(MODULE);
+const {DispatchSession,HOST_DEADLINE_MS} = hostModule;
 const OriginalSession = LEGACY ? (await import(OLD_MODULE)).DispatchSession : DispatchSession;
 const config=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));
 const original=new OriginalSession(config);
 const initial=await original.next();
+if (NEGATIVE) {
+  const fake={...original};
+  if (NEGATIVE==='plain-child') fake.child={pid:original.child.pid,exitCode:original.child.exitCode,signalCode:original.child.signalCode};
+  const before=fs.readFileSync(LEDGER,'utf8');
+  let safeRefused=false,refused=false,spawnedChildren=0,hostActions=0;
+  let continuation=null;
+  const spawn=childProcess.spawn;
+  childProcess.spawn=(...args)=>{spawnedChildren++;return spawn(...args);};
+  syncBuiltinESMExports();
+  try {
+    try { await DispatchSession.prototype.resumePrehost.call(fake,config.requestMeta); } catch { safeRefused=true; }
+    try {
+      continuation=await DispatchSession.prototype.continuePrehost.call(fake,config.requestMeta);
+      const packet=await continuation.next();
+      if(packet.kind==='host_call') hostActions++;
+    } catch { refused=true; }
+    if(continuation) await continuation.interrupt('Stop owned negative fixture; never invoke native');
+  } finally {
+    childProcess.spawn=spawn;
+    syncBuiltinESMExports();
+  }
+  console.log(JSON.stringify({initial,negative:NEGATIVE,safeRefused,refused,spawnedChildren,hostActions,
+    ledgerUnchanged:fs.readFileSync(LEDGER,'utf8')===before,exportedHelper:typeof hostModule.continuePrehost==='function'}));
+} else {
 let plainRefused=false;
 try { await DispatchSession.prototype.resumePrehost.call({...original},config.requestMeta); } catch { plainRefused=true; }
 const started=performance.now();
@@ -92,18 +119,29 @@ let refused=false;
 try { await resumed.resumePrehost(config.requestMeta); } catch { refused=true; }
 console.log(JSON.stringify({initial,packet,calls,originalCalls:original.calls,same:resumed===duplicate,
   elapsedMs:performance.now()-started,deadlineMs:HOST_DEADLINE_MS,refused,plainRefused,stderr:resumed.stderr}));
+}
 """.replace('OLD_MODULE', json.dumps((folder/'old-host.mjs').as_uri())).replace(
-            'MODULE', json.dumps((folder/'dispatch_host.mjs').as_uri())).replace('LEGACY', json.dumps(legacy))
+            'MODULE', json.dumps((folder/'dispatch_host.mjs').as_uri())).replace('LEGACY', json.dumps(legacy)).replace(
+            'NEGATIVE', json.dumps(negative)).replace('LEDGER', json.dumps(str(f.runtime.path)))
         result = subprocess.run(['node', '--input-type=module', '-e', code, config['path']],
             cwd=f.root, capture_output=True, encoding='utf-8', timeout=55)
         self.assertEqual(result.returncode, 0, result.stderr)
         data = json.loads(result.stdout)
         output = os.environ.get('COORDINATION_TIMEOUT_EVIDENCE')
-        case = 'captured' if getattr(self, 'has_capture', False) else 'legacy' if legacy else 'current'
+        case = 'helper-'+negative if negative else 'captured' if getattr(self, 'has_capture', False) else 'legacy' if legacy else 'current'
         if output:
             Path(output).mkdir(parents=True, exist_ok=True)
             (Path(output)/('probe-'+case+'.json')).write_text(
                 json.dumps(data, indent=2), encoding='utf-8')
+            (Path(output)/('probe-'+case+'.mjs')).write_text(code, encoding='utf-8')
+        if negative:
+            self.assertTrue(data['safeRefused'], data)
+            self.assertTrue(data['refused'], data)
+            self.assertEqual(data['spawnedChildren'], 0, data)
+            self.assertEqual(data['hostActions'], 0, data)
+            self.assertTrue(data['ledgerUnchanged'], data)
+            self.assertFalse(data['exportedHelper'], data)
+            return
         self.assertEqual(data['originalCalls'], 0)
         self.assertEqual(data['deadlineMs'], 45000)
         self.assertLess(data['elapsedMs'], 45000)
@@ -134,6 +172,12 @@ console.log(JSON.stringify({initial,packet,calls,originalCalls:original.calls,sa
 
     def test_original_base_host_instance_can_resume_through_reviewed_new_prototype(self):
         self.probe(legacy=True)
+
+    def test_direct_helper_refuses_plain_session_without_child_or_host_action(self):
+        self.probe(legacy=True, negative='plain-session')
+
+    def test_direct_helper_refuses_plain_child_without_child_or_host_action(self):
+        self.probe(legacy=True, negative='plain-child')
 
 
 if __name__ == '__main__':
