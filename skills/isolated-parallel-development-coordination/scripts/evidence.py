@@ -23,6 +23,11 @@ def artifact(value):
     state, task_id, inventory = preserved
     from cleanup import canonical_path
     original = canonical_path(value['path'])
+    historical = [row for row in inventory['files'] if row.get('original') == value and row.get('git_source')]
+    if historical:
+        require(len(historical) == 1, 'ambiguous preserved Git artifact')
+        verify_historical_copy(state, task_id, historical[0])
+        return original_artifact(historical[0])
     if inventory.get('remote_verification'):
         owned=any(r.get('task_id')==task_id and r.get('path') and
             original.is_relative_to(canonical_path(r['path'])) for r in state['runtime'].get('resources',{}).values())
@@ -135,6 +140,79 @@ def git(root, *args):
                             encoding="utf-8", timeout=20)
     require(result.returncode == 0, "git: " + result.stderr.strip())
     return result.stdout.strip()
+
+
+def historical_git_artifact(state, task_id, report_ref, value):
+    """Resolve only an accepted earlier task report's tracked, merged Git bytes."""
+    from cleanup import canonical_path
+    from coordination import receipt_context, receipt_report
+    task = state['tasks'][task_id]
+    matches = [(key, row) for key, row in state['receipts'].items() if row.get('status') == 'processed' and
+        row.get('payload', {}).get('task_id') == task_id and row['payload'].get('kind') == 'completed' and
+        row['payload'].get('report') == report_ref]
+    require(len(matches) == 1, 'canonical historical report required')
+    receipt_id, receipt = matches[0]; payload = receipt['payload']
+    require(receipt['fingerprint'] == fingerprint(payload), 'historical receipt changed')
+    receipt_context(state, payload)
+    receipt_report(state, payload)
+    report = load_bound(report_ref); source = report['source']
+    require(task['phase'] == 'completed' and task.get('merge', {}).get('verified') and
+        report.get('project_id') == state['project']['id'] and report.get('task_id') == task_id and
+        0 < report['delivery_revision'] < task['delivery_revision'] and
+        report.get('owner_agent_id', task['owner_agent_id']) == task['owner_agent_id'] and
+        report.get('branch', task['branch']) == task['branch'] and
+        canonical_path(source['root']) == canonical_path(task['worktree']) and source['kind'] == 'git',
+        'historical report task/source binding differs')
+    require(source['digest'] == fingerprint({k:v for k,v in source.items() if k != 'digest'}) and
+        report['self_test']['source_digest'] == source['digest'], 'historical source inventory changed')
+    path = canonical_path(value['path']); root = canonical_path(task['worktree'])
+    require(Path(value['path']).is_absolute() and path.is_relative_to(root), 'historical path outside task source')
+    relative = path.relative_to(root).as_posix()
+    rows = [row for row in source['files'] if row.get('relative') == relative]
+    require(len(rows) == 1 and (rows[0].get('sha256') == value['sha256'] or
+        rows[0].get('sha256') is None and any(canonical_path(x['path']) == path and
+            x['sha256'] == value['sha256'] for x in source['extra'])), 'historical path/SHA not in report source')
+    repository = canonical_path(state['project'].get('local_main_repo') or state['project']['root'])
+    def read(*args): return git(repository, '-c', 'core.longpaths=true', *args)
+    common = canonical_path(read('rev-parse', '--path-format=absolute', '--git-common-dir'))
+    for checkout in (state['project']['root'], task['worktree']):
+        if io_path(checkout).exists():
+            require(canonical_path(git(checkout, '-c', 'core.longpaths=true', 'rev-parse',
+                '--path-format=absolute', '--git-common-dir')) == common, 'historical repository differs')
+        else:
+            cleaned = [r for r in state['runtime'].get('resources', {}).values() if
+                r.get('task_id') == task_id and r.get('kind') == 'worktree' and
+                r.get('cleanup_status') == 'cleaned' and canonical_path(r['path']) == canonical_path(checkout)
+            ]
+            require(cleaned, 'historical worktree missing before cleanup')
+            for resource in cleaned: artifact(resource['cleanup_result']['evidence'])
+    commit = report['git']['head_sha']; target = report['git']['target_sha']; head = task['merge']['head_sha']
+    import re
+    require(all(isinstance(x, str) and re.fullmatch('[a-f0-9]{40}', x) for x in (commit, target, head)),
+        'exact historical Git commits required')
+    require(not (task.get('mr') or {}).get('url') or report['git'].get('pr_url') == task['mr']['url'],
+        'historical report PR differs')
+    require(read('cat-file', '-t', commit) == 'commit' and
+        read('merge-base', target, commit) == target and read('merge-base', commit, head) == commit and
+        read('merge-base', head, 'refs/heads/'+state['project']['main_branch']) == head,
+        'historical Git commit not included in task/main')
+    entry = read('ls-tree', '-z', commit, '--', ':(literal)'+relative).split('\t')
+    require(len(entry) == 2 and entry[1].rstrip('\0') == relative and
+        entry[0].split()[:2] in (['100644','blob'], ['100755','blob']), 'historical path is not a tracked regular blob')
+    blob = entry[0].split()[2]
+    result = subprocess.run(['git', '-c', 'core.longpaths=true', '-c', 'core.hooksPath='+os.devnull,
+        '-c', 'core.fsmonitor=false', '-C', str(repository), 'cat-file', 'blob', blob],
+        cwd=repository, capture_output=True, timeout=20)
+    require(result.returncode == 0 and hashlib.sha256(result.stdout).hexdigest() == value['sha256'],
+        'historical Git blob SHA mismatch')
+    return result.stdout, dict(project_id=state['project']['id'], task_id=task_id, repository=str(repository),
+        report=report_ref, receipt_id=receipt_id, commit=commit, relative=relative, blob=blob)
+
+
+def verify_historical_copy(state, task_id, row):
+    data, provenance = historical_git_artifact(state, task_id, row['git_source']['report'], row['original'])
+    require(row['git_source'] == provenance and original_artifact(row).read_bytes() == data and
+        row['sha256'] == row['original']['sha256'], 'preserved historical Git binding/bytes changed')
 
 
 def snapshot(root, kind=None, extra=()):

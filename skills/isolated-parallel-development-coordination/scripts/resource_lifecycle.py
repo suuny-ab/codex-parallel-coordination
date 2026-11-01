@@ -3,7 +3,7 @@ from copy import deepcopy
 from pathlib import Path
 
 from coordination import SCHEMA, writer_lock
-from evidence import artifact, fingerprint, io_path, load_bound, ref, report_for, require, write_atomic
+from evidence import artifact, fingerprint, historical_git_artifact, io_path, load_bound, ref, report_for, require, write_atomic
 
 
 # Only declared contract slots carry references; path/hash-shaped JSON elsewhere
@@ -210,13 +210,16 @@ def preserve(runtime, task_id, destination, handoff, actor, *, merge_verificatio
         if operation_id and not marker.exists():
             marker.parent.mkdir(parents=True,exist_ok=False)
             write_atomic(marker,dict(context,remote_verification=remote_verification))
-        files, seen = [], set()
+        files, seen, git_sources = [], set(), []
         def source_inventory(value):
             return isinstance(value, dict) and value.get('kind') in ('git', 'directory') and \
                 {'root','files','extra','digest'}.issubset(value)
         def source_identity(value):
             return (canonical_path(value['path']), value['sha256'])
-        def copy(value, required=False, declared=False):
+        reports = [row['payload']['report'] for row in state['receipts'].values() if
+            row.get('status') == 'processed' and row.get('payload', {}).get('task_id') == task_id and
+            row['payload'].get('kind') == 'completed']
+        def copy(value, required=False, declared=False, report_ref=None):
             # Reference shape and an inline evidence declaration are separate;
             # a referenced file starts its own JSON content contract below.
             if isinstance(value, dict):
@@ -226,16 +229,22 @@ def preserve(runtime, task_id, destination, handoff, actor, *, merge_verificatio
                     token = fingerprint(original)
                     if token not in seen:
                         seen.add(token)
-                        source = artifact(original)
-                        data = source.read_bytes()
-                        target = destination/(token+source.suffix)
+                        provenance = None
+                        try: data = artifact(original).read_bytes()
+                        except ValueError:
+                            if report_ref is None or not canonical_path(original['path']).is_relative_to(
+                                    canonical_path(task['worktree'])): raise
+                            data, provenance = historical_git_artifact(state, task_id, report_ref, original)
+                        target = destination/(token+Path(original['path']).suffix)
                         io_path(target).parent.mkdir(parents=True, exist_ok=True)
                         if io_path(target).exists():
                             require(operation_id and io_path(target).read_bytes()==data,'partial preserved bytes changed')
                         else:
                             with io_path(target).open('xb') as stream: stream.write(data)
-                        files.append(dict(ref(target), original=original))
-                        # JSON references retain their original identities; copies resolve only after confirmed cleanup.
+                        row = dict(ref(target), original=original)
+                        if provenance: row['git_source'] = provenance
+                        files.append(row)
+                        # Keep JSON identities; historical reads revalidate their Git provenance.
                         import json
                         try: nested = json.loads(data.decode('utf-8-sig'))
                         except (ValueError, UnicodeError): nested = None
@@ -243,7 +252,7 @@ def preserve(runtime, task_id, destination, handoff, actor, *, merge_verificatio
                         manifest = isinstance(nested, list) and bool(nested) and all(
                             isinstance(row, dict) and 'path' in row and 'sha256' in row and
                             Path(row['path']).is_absolute() for row in nested)
-                        copy(nested, manifest, manifest)
+                        copy(nested, manifest, manifest, original if original in reports else report_ref)
                 # Serialized state, host packets and dispatch requests are
                 # captured values, not another live graph. References above
                 # are still checked even when they carry packet metadata.
@@ -257,17 +266,25 @@ def preserve(runtime, task_id, destination, handoff, actor, *, merge_verificatio
                         for row in value['files'] if value['kind'] == 'git' and row.get('relative') and row.get('sha256')}
                     for nested in value['extra']:
                         if not Path(nested['path']).is_absolute() or source_identity(nested) not in source_files:
-                            copy(nested, True, True)
+                            if report_ref and value['kind'] == 'git':
+                                try:
+                                    _, provenance = historical_git_artifact(state, task_id, report_ref, nested)
+                                except ValueError: pass
+                                else:
+                                    identity = dict(original=nested, git_source=provenance)
+                                    if identity not in git_sources: git_sources.append(identity)
+                                    continue
+                            copy(nested, True, True, report_ref)
                     if not declared: return
                 if {'executor_id','generation','files','handoff','unregistered_evidence_preserved'}.issubset(value):
-                    copy(value['files'], True, True)
+                    copy(value['files'], True, True, report_ref)
                 # Inventory rows and reference metadata can both contain real evidence.
                 for key, nested in value.items():
                     # A preserved copy's original is an identity, not a live dependency.
                     if not (reference and key == 'original'):
-                        copy(nested, key in REFERENCE_FIELDS, declared or key in REFERENCE_FIELDS)
+                        copy(nested, key in REFERENCE_FIELDS, declared or key in REFERENCE_FIELDS, report_ref)
             elif isinstance(value, list):
-                for nested in value: copy(nested, required, declared)
+                for nested in value: copy(nested, required, declared, report_ref)
         copy(preserved_binding(task)); copy(handoff, True); copy(list(extra), True, True);copy(remote_verification, True)
         copy(state['runtime']['executors'][task['owner_agent_id']])
         for resource in state['runtime'].get('resources', {}).values():
@@ -278,6 +295,7 @@ def preserve(runtime, task_id, destination, handoff, actor, *, merge_verificatio
         manifest = dict(executor_id=task['owner_agent_id'], generation=state['runtime']['executors'][task['owner_agent_id']]['generation'],
             files=files, merge_verification=proof, handoff=handoff, unregistered_evidence_preserved=True,
             project_id=runtime.project_id, task_id=task_id, binding=preserved_binding(task), source=report['source'], scope=scope)
+        if git_sources: manifest['git_sources'] = git_sources
         if remote_verification:manifest['remote_verification']=remote_verification
         path = destination/'preservation.json'; write_atomic(path, manifest); reference = ref(path)
         task['preservation'] = reference
