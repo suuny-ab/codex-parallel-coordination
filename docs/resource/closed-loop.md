@@ -52,6 +52,14 @@ JSON 默认是数据：普通相对或绝对 `path/sha256` 清单、失败快照
 
 带该远端核验的 canonical preserve_task 只保存必要交付/测试/审核/非 Git 材料和源清单，Git 可恢复的正式代码不逐任务全量备份。其后 report_for 使用已核云端提交与同字节持久化材料，原工作树不存在、目录待清理或原路径被新目录复用都不撤销已完成事实；它们也不授予删除新对象的权限。保全损坏、当前交付/审核/main/授权绑定变化仍拒绝。读取原引用可用 evidence.preserved_read 的有限上下文。
 
+正常同树返工的 R1 报告可能引用现已变为 R2 的跟踪文件。首次 `preserve_task` 遍历已接受的原任务报告时，若原路径字节不再匹配，只能从该不可变报告绑定的 Git head 解析历史字节：重新核对 canonical 回执、作者/项目/任务/修订、原 source 清单及 SHA、注册工作树与可信项目仓库的共同 Git 身份、报告 target→原 head→任务合入 head→main 的祖先关系，以及准确的跟踪相对路径和普通 blob 类型。原始 blob 字节必须匹配原 SHA；不应用 checkout/filter/换行转换，不用任意外部备份或报告里自声明的仓库。
+
+历史项仍进入同一 `preservation.json.files`，保留原 `original.path/sha256`，并增加 `git_source`（原 report 引用、receipt_id、项目/任务、可信 repository、commit、relative 和 blob）。只复制实际被引用的历史工件，不全量复制旧源码。普通 Git source 清单不是额外外部依赖；必要非 Git 证据缺失、未跟踪文件、跨任务/仓库/提交/路径/SHA 不符仍拒绝。旧报告、回执和当前 R2 工作树均不改写。后续 eligibility 和有限 `preserved_read` 对历史项复用同一解析入口，重新核来源和保存副本的准确字节；`git_source` 字段本身不授予例外。保全不完整、活跃/共享/受保护资源仍不能回收。
+
+旧报告的 `null+extra` 长路径源码补充，只有在原 canonical 报告上下文中经同一 Git 解析器核证后才省去源码复制，并在同一清单的 `git_sources` 保存 original 和已核证来源，eligibility 再核证。跳过源码补充不进入已复制集合，同文件后续出现在 `entry.artifact` 或显式证据时仍实际保全。null/extra 字段本身不代表已跟踪；无法核证、未跟踪或非 Git 的必要补充继续核原字节并复制，缺失/篡改仍拒绝。此兼容仅承接既有源码清单，不迁移或改写原报告。
+
+中断后的保全沿原 continuation `operation_id` 和同一 destination 恢复，核对原 intent 的完整绑定，并逐字节检查已有部分副本；不能另造 operation、覆盖损坏副本或重做关闭/释放/删除。已有普通路径字节仍匹配时继续原有复制规则；工作树消失只能沿已确认的本任务工作树清理事实读取保全历史。可信 Git 对象或原报告来源无法核证时保留阻断，不提供通用历史迁移或放宽回收授权。隔离 R1→R2 与部分恢复回归不代替真实宿主正式保全和回收验收。
+
 native 关闭与目录清理分开：按[ROOT 原生关闭控制接线](../../skills/isolated-parallel-development-coordination/references/native-control.md)保存 intent、ROOT 一次领取并正式调用、集成者 reconcile。交接和安全关口完成后，目录清理失败仍保留 pending_cleanup，不能拖住无活动工作的原生作者。无本地 permit 不补造许可，平台容量数仍未知。
 
 ## 受信 RESOURCE profile

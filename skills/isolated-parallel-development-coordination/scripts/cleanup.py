@@ -103,6 +103,10 @@ def eligibility(runtime,state,task_id,preservation_ref,scope,*,require_pr_closed
         external(item)
         if item.get('original'):
             original=Path(item['original']['path'])
+            if item.get('git_source'):
+                from evidence import verify_historical_copy
+                verify_historical_copy(state,task_id,item)
+                continue
             durable=(inventory.get('remote_verification') and task.get('preservation')==preservation_ref and
                 any(r.get('task_id')==task_id and r.get('path') and
                     canonical_path(original).is_relative_to(canonical_path(r['path']))
@@ -115,6 +119,10 @@ def eligibility(runtime,state,task_id,preservation_ref,scope,*,require_pr_closed
                 require(cleaned or durable,'original evidence disappeared outside confirmed cleanup/preserved cloud completion')
                 for resource in cleaned:artifact(resource['cleanup_result']['evidence'])
             require(item['sha256']==item['original']['sha256'],'external copy bytes differ')
+    for item in inventory.get('git_sources', []):
+        from evidence import historical_git_artifact
+        _, provenance = historical_git_artifact(state,task_id,item['git_source']['report'],item['original'])
+        require(provenance==item['git_source'],'preserved Git source identity changed')
     external(inventory['handoff'])
     sources=[task.get('delivery') or task.get('pause_checkpoint')]
     if task.get('development_binding'):sources.append(task['development_binding']['spec'])
