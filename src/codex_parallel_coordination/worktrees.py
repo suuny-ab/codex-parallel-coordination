@@ -18,8 +18,17 @@ class GitWorktrees:
             raise ValueError("existing repository and separate cleanup root required")
 
     def _git(self, *args):
-        return self.runner(["git", "-C", str(self.repository), *args], capture_output=True,
+        return self.runner(["git", "-c", "core.longpaths=true", "-C", str(self.repository), *args], capture_output=True,
                            check=True, timeout=20)
+
+    def create(self, record, branch, base):
+        """One exact new worktree; caller persists intent and never blindly retries."""
+        target = self._target(record)
+        if target.exists() or not branch.startswith("codex/"):
+            raise ValueError("new dedicated codex branch/worktree required")
+        head = self._git("rev-parse", "--verify", base+"^{commit}").stdout.decode("ascii").strip()
+        self._git("worktree", "add", "-b", branch, str(target), head)
+        return {"repository_root": str(self.repository), "branch": "refs/heads/"+branch}
 
     def _entries(self):
         raw = self._git("worktree", "list", "--porcelain", "-z").stdout.decode("utf-8")
@@ -61,13 +70,19 @@ class GitWorktrees:
         expected_head = record.get("metadata", {}).get("expected_head")
         if entries[0] == match or expected_head is not None and match.get("HEAD") != expected_head:
             raise ValueError("primary checkout or changed worktree identity")
+        branch = record.get("metadata", {}).get("branch")
+        if branch is not None and match.get("branch") != branch:
+            raise ValueError("dedicated worktree branch changed")
         info = target.stat()
         identity = {"repository": str(self.repository), "path": str(target), "head": match["HEAD"],
                     "device": info.st_dev, "inode": info.st_ino}
-        status = self.runner(["git", "--no-optional-locks", "-C", str(target), "status", "--porcelain=v1", "-z",
+        if branch is not None:
+            identity.pop("head")
+            identity["branch"] = branch
+        status = self.runner(["git", "-c", "core.longpaths=true", "--no-optional-locks", "-C", str(target), "status", "--porcelain=v1", "-z",
                               "--untracked-files=all"], capture_output=True, check=True, timeout=20)
         safe = "locked" not in match and not status.stdout
-        return {"exists": True, "identity": identity, "safe": safe,
+        return {"exists": True, "identity": identity, "head": match["HEAD"], "safe": safe,
                 "reason": "" if safe else "worktree locked or has unpreserved changes"}
 
     def remove(self, record, expected_identity):

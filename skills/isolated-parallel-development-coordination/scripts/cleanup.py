@@ -19,7 +19,7 @@ def canonical_path(path):
 def register(runtime, task_id, resource, authority_ref, actor_id):
     artifact(authority_ref)
     with writer_lock(runtime.path):
-        state=runtime._load();runtime._actor(state,actor_id);runtime._scope(state,task_id)
+        state=runtime._load();runtime._resource_actor(state,actor_id,task_id);runtime._scope(state,task_id)
         require(resource.get('id') and resource.get('kind') in KINDS,'explicit resource identity/kind required')
         resources=state['runtime'].setdefault('resources',{})
         require(resource['id'] not in resources,'resource already registered')
@@ -50,6 +50,9 @@ def register(runtime, task_id, resource, authority_ref, actor_id):
 def eligibility(runtime,state,task_id,preservation_ref,scope,*,require_pr_closed=True):
     task=state['tasks'][task_id]
     cancelled=task['phase']=='cancelled'
+    from resource_lifecycle import inventory
+    if not cancelled or task.get('resource_contract')=='new-task/1':
+        inventory(state,task_id)
     if cancelled:
         from development_lifecycle import cancelled as verify_cancelled
         record=verify_cancelled(state,task_id,scope)
@@ -137,7 +140,7 @@ def eligibility(runtime,state,task_id,preservation_ref,scope,*,require_pr_closed
 def run(runtime,task_id,operation_id,preservation_ref,invoke,actor_id,*,authorized=False,scope='fixture_only'):
     require(authorized is True and operation_id,'separate exact cleanup authorization required')
     with writer_lock(runtime.path):
-        state=runtime._load();runtime._actor(state,actor_id);runtime._scope(state,task_id)
+        state=runtime._load();authority=runtime._resource_actor(state,actor_id,task_id);runtime._scope(state,task_id)
         eligibility(runtime,state,task_id,preservation_ref,scope)
         operations=state['runtime']['operations']
         if operation_id in operations:
@@ -148,6 +151,7 @@ def run(runtime,task_id,operation_id,preservation_ref,invoke,actor_id,*,authoriz
         resources=[r for r in state['runtime'].get('resources',{}).values() if r['task_id']==task_id]
         record=dict(operation='cleanup',task_id=task_id,operation_id=operation_id,status='intent',results={},preservation=preservation_ref,
                     cleanup_authorized=authorized,scope=scope)
+        if authority:record.update(resource_authority=authority,actor_id=actor_id)
         operations[operation_id]=record
         task['cleanup']=dict(status='pending_cleanup',operation_id=operation_id,owner=actor_id)
         runtime._save(state,dict(op='cleanup-intent',task_id=task_id))
@@ -235,6 +239,9 @@ def verify(runtime,context,proof):
         value=load_bound(proof) if 'path' in proof and 'sha256' in proof else proof
         state=runtime._load();resource=state['runtime']['resources'][value['resource_id']]
         operation=state['runtime']['operations'][value['cleanup_operation_id']]
+        if operation.get('resource_authority'):
+            require(runtime._resource_actor(state,operation['actor_id'],value['task_id'])==operation['resource_authority'],
+                    'task resource authority changed')
         require(resource['cleanup_status']=='intent' and operation['status']=='intent' and
             operation['cleanup_authorized'] is True and load_bound(resource['cleanup_proof'])==value,'not a current canonical cleanup intent')
         require(context.get('resource_id',context.get('request_id'))==resource['id'] and
@@ -255,7 +262,7 @@ def reconcile(runtime,task_id,resource_id,observation_ref,actor_id):
     """Read actual effect after an unknown response, never resend the delete/close."""
     facts=load_bound(observation_ref)
     with writer_lock(runtime.path):
-        state=runtime._load();runtime._actor(state,actor_id);runtime._scope(state,task_id)
+        state=runtime._load();runtime._resource_actor(state,actor_id,task_id);runtime._scope(state,task_id)
         resource=state['runtime']['resources'][resource_id]
         require(resource['task_id']==task_id and resource['cleanup_status'] in ('unknown','intent'),'not an uncertain owned resource')
         require(facts.get('resource_id')==resource_id and facts.get('status') in ('cleaned','retained') and

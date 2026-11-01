@@ -37,3 +37,5 @@ description: 主会话对齐需求并核对spec，用户批准拆合与派发摘
 任务类型必须明确：旧任务和缺省类型保守按 code；代码任务经开发自测、验收、集成审核、合入目标 main 并核对后才完成。新只读分析由主会话处理，`prepare` 拒绝新建 read_only 开发者。已有 read_only 历史任务继续保留冻结输入及合法完成协议，交付者通过 `complete_read_only` 核当前修订成果，不制造 MR/CI；明确 user_required 的仍须真实用户接受。类型、验收方式和确认授权不能变更来绕门禁。见[历史只读任务协议](references/read-only-lifecycle-design.md)。
 
 任务完成前保留 agent 上下文，不把 idle/报告 completed 当 closed，不假定记忆可无损恢复。完成后先保全提交号（代码任务）、决策、验收和最小复现/未入库证据及必要知识，再按具体授权回收登记的专属 agent 名额、进程、工作树、临时库和验收环境。共享引用未解除、受保护、活动工作/后代或其它任务实际依赖的资源不回收；尚未部署本身不要求保留旧开发环境。task_completed 与 cleanup_completed 分开，失败 pending_cleanup 不丢任务，未知先核实际效果不重发。后续 bug 从最新 main 新任务关联旧记录；部署另用冻结提交/制品。本组件不实际清理真实项目；回调仅在新具体范围授权内启用。
+
+正常新代码任务使用同插件的 `ResourceBridge.prepare_development/create_worktree`：先核对 CORE cleanup_root 与 RESOURCE cleanup_roots，再实际创建和登记工作树；原 launch/observed 绑定同事务登记实际作者。按需临时目录、库、文件和有限受管进程也通过桥接创建登记；没有创建不填身份，基础 prepare 返回未闭环且登记不全不能清理完成。合目标 main 核验后用 `Runtime.preserve_task` 外部保全当前交付及引用证据，再用原 reclaim_development 清理。保全与确认清理记录绑定后，report_for 可继续核验已经合法删除的临时源，不改原报告或继承旧通过。无宿主能力、创建/关闭未知保持责任和待核验；不扫描补登记历史资源。见[新任务资源入口](references/core-runtime.md#新任务资源入口)。

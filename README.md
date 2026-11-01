@@ -30,6 +30,8 @@ python -B tools/profile.py uninstall --profile C:/explicit-isolated-profile
 
 在受信宿主代码中，`ResourceBridge.admit` 从真实 RESOURCE 许可生成 CORE admission；只有 granted 才调用已授权的宿主执行入口。`cleanup` 联接 CORE 的当前清理 intent 和 RESOURCE 实际回执，`reconcile_cleanup` 对账未知结果，`release_agent_quota` 只接受 CORE 已确认的关闭/未启动事实。桥接器不另存任务或资源账本，不提供 JSON 自授权。
 
+正常新代码任务先走 `ResourceBridge.prepare_development/create_worktree`，创建位置在两组件允许范围内，实际创建同事务登记。后续专属临时环境/数据库/有限测试进程使用同桥接的创建入口；实际作者在原派发入口绑定时登记。合 main 核验后 `Runtime.preserve_task` 将原交付及其审核/测试证据图复制到外部，回收后仍可校验同一报告。基础 `Runtime.prepare` 只排队、明确登记待补齐，不能据空资源清单声称闭环。具体调用与真实宿主限制见[新任务资源闭环](docs/resource/closed-loop.md)。
+
 新开发任务登记为 `task_kind=code`；旧记录未声明时按代码任务保守处理。历史 read_only 任务保留 `acceptance_type=delivery_verified|user_required`，由 canonical 完成入口核验当前修订、确认依据、成果与源快照，不伪造 MR/CI。`prepare` 不再创建只读开发者。不能事后改任务类型、冒认旧 owner 或直接改完成状态来绕过门禁。
 
 纯技术代码任务也可明确声明 `acceptance_type=delivery_verified`。真实任务衔接入口可承接原批准、CLI 来源、不可变报告后的独审、技术验收及实际 Git 合入；人工验收与合并授权分别保存。历史默认编码只按显式原指令核实，不重写确认过的 scope。详见[真实任务事实承接](skills/isolated-parallel-development-coordination/references/real-use-closeout.md)。

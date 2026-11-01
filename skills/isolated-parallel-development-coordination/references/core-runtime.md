@@ -76,6 +76,18 @@ RESOURCE 文件联接示例：invoke 收到的 resource 已含 CORE 生成的 cl
 
 部分失败保存 task.cleanup.status=pending_cleanup 和各资源已确认结果，task.phase 仍 completed。重复操作幂等，unknown/intent 不盲重发；reconcile_cleanup 先核实际已清/仍保留证据，再允许新的有限操作继续。原回合结果保留，清理失败不丢任务。后续无需长期保留开发环境：发布用独立冻结提交/制品任务；publication_dependencies 仅指其它活动任务还实际使用这些资源，不能只因“尚待部署”填入。
 
+## 新任务资源入口
+
+未设置全局 delivery 时，资源操作仅可复用本任务原批准。正常 prepare_development 的 authority_ref 冻结 approved-dispatch-plan/1；已观察派发继续引用其现有 proof.approval。每次重验原 main、独立 integration_agent、task/worktree/branch 及 bounded_new_task_resource_cleanup 范围。只允许该任务的资源创建、observe_executor(..., task_id=...)、保全及清理/确认/许可回执；不修改 _actor，不得到普通任务写权、其它任务或 resume 权限，不为无 CI 项目编造 required_ci_jobs。当前调用者身份仍须由真实宿主提供。
+
+完整插件宿主以同一 Runtime/Controller/ArtifactCleanup 构造 ResourceBridge，先 `prepare_development(spec, main_actor)`，再 `create_worktree(task_id, operation_id, authority_ref, actor, authorized=True)`。spec.worktree 必须是 CORE cleanup_root 内的未创建专属目录，且 RESOURCE cleanup_roots 同样允许。任一范围或能力不匹配在 Git 前拒绝；同操作未知不重发。只有实际创建和两组件登记成功为 registered，才走原批准路由、RESOURCE 准入和 launch。取得实际执行者时同事务登记 task:agent、generation 和归属。基础 prepare 不提供创建能力，返回 managed_closed_loop=false，登记缺口不能成为 cleanup_completed。
+
+按需调用 bridge.create_temporary 创建并登记 environment/database/artifact，bridge.run_process 复用 RESOURCE 的有限 Job/PID 创建和整树退出证据；没有实际 PID 的排队请求不冒充已运行。后续资源同样专属于原需求，不建立新任务队列。详细 API、外部保全和真实宿主边界见插件 docs/resource/closed-loop.md。
+
+合入核验后由当前唯一交付者调用 `preserve_task(task_id, new_external_directory, handoff_ref, actor, scope=..., extra=[...])`。保全准确的交付/审核/合入引用图、当前修订及必要材料到回收范围外，随后沿用 reclaim_development。原报告路径和字节不改。report_for 只有在同任务 worktree 确认清理及保全绑定仍有效时读取已保全源清单；缺失证据必须有已确认清理归属和同 hash 副本。源/证据存在但改字节、非正常丢失、保全损坏均拒绝。原始 artifact/load_bound 审阅可用 evidence.preserved_read(state, task_id) 的有限上下文。
+
+本入口不扫描、迁移、补登记历史任务，不重写旧完成状态，不增加原 main/交付者角色或 Git/清理权限。缺能力或未知仍归当前集成者处理；fixture 成功不代表 live 账本接线或 native 关闭可用。
+
 ## 测试与事实范围
 
 Windows 的 cleanup-proofs/receipts 文件可能因完整 SHA 文件名超过普通 Win32 路径上限。共享证据 I/O 的 write_atomic/load/digest/artifact/ref/load_bound 在达到 260 字符时采用扩展绝对路径；两类生成工件也在存在性/不可变检查前转换。保留 64 位 SHA、原 atomic replace、后续 hash/read 和幂等校验；短路径和其它平台保持原有路径。不会改系统长路径开关、缩短 TEMP 或放宽绝对路径/资源归属/清理授权。只涵盖本模块调用这些入口的证据 I/O，不宣称全局任意长路径支持。测试夹具仅为已核归属的独占临时根销毁使用扩展别名，传给被测入口的路径仍是普通路径。
