@@ -136,10 +136,13 @@ class ResourceClosedLoop(core_tests.CoreFixture):
     def test_remote_bound_completion_does_not_depend_on_reused_old_source_path(self):
         self.normal_cycle(scoped=True,native=True,durable=True)
 
+    def test_normal_json_inventory_preserves_nested_evidence_before_resource_cleanup(self):
+        self.normal_cycle(scoped=True,native=True,durable=True,json_data=True)
+
     def test_directory_failure_does_not_retain_completed_handed_off_native_agent(self):
         self.normal_cycle(scoped=True,native=True,durable=True,directory_failure=True)
 
-    def normal_cycle(self, scoped=False, native=False, durable=False, directory_failure=False):
+    def normal_cycle(self, scoped=False, native=False, durable=False, directory_failure=False, json_data=False):
         repo = self.repository()
         authority = self.json('approved-task.json',dict(schema='approved-dispatch-plan/1',approval='approved',
             source='direct user message in original main conversation',main_conversation=self.actor,
@@ -234,7 +237,9 @@ class ResourceClosedLoop(core_tests.CoreFixture):
             execution='completed',active_children=[],pending_work=False)
         self.runtime.observe_executor('worker-A',facts,'delivery-worker',self.json('post-merge-observation.json',facts),
             task_id='A' if scoped else None)
-        preservation = self.runtime.preserve_task('A',self.root/'external-preservation',self.file('handoff.txt'),
+        handoff = (self.json('handoff.json', dict(file_inventory=[dict(path='README.md',sha256='0'*64)],
+            nested=[dict(evidence=[ref(environment/'test.log')])])) if json_data else self.file('handoff.txt'))
+        preservation = self.runtime.preserve_task('A',self.root/'external-preservation',handoff,
             'delivery-worker',scope='fixture_only',remote_verification=remote)
         if directory_failure:
             (tree/'disposable-test-output.txt').write_text('Untracked temporary output; directory remains protected',encoding='utf-8')
