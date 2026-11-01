@@ -315,7 +315,7 @@ def merged(state, key, command, actor):
         for item in observed['evidence']: artifact(item)
     for item in state['project']['protected']: artifact(item)
     root = task['worktree']
-    require(git(root, 'branch', '--show-current') == task['branch'] and not git(root, 'status', '--porcelain') and
+    require(git(root, 'branch', '--show-current') == task['branch'] and not git(root, '-c', 'core.longpaths=true', 'status', '--porcelain') and
         git(root, 'rev-parse', 'HEAD') == command['source_head'], 'author branch/head/source changed')
     repository = state['project'].get('local_main_repo') or state['project']['root']
     # Use the task repository only when explicitly requested (e.g. an isolated replay).

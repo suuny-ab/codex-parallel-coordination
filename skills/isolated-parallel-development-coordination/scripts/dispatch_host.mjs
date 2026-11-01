@@ -53,7 +53,7 @@ export class DispatchSession {
     this.closed = false;
     this.callTimeoutMs = NODE_CALL_TIMEOUT_MS;
     this.exited = new Promise(resolve => { this.resolveExit = resolve; });
-    const endpoint = fileURLToPath(new URL('./standard_dispatch.py', import.meta.url));
+    const endpoint = path.toNamespacedPath(fileURLToPath(new URL('./standard_dispatch.py', import.meta.url)));
     this.child = spawn(python, ['-X', 'utf8', '-B', endpoint], {
       cwd: profile.project_root, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
     });

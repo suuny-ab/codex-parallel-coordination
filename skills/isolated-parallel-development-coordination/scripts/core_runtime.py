@@ -1,6 +1,6 @@
 """Project-keyed public entrypoint over the frozen single-ledger kernel (stdlib)."""
 import argparse
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 from copy import deepcopy
 import hashlib
 import json
@@ -178,7 +178,7 @@ class Runtime:
                     event_id=payload['event_id'], actor_id=actor_id, observation=observation_ref))
             return dict(result, revision=state['revision'])
 
-    def bind_executor(self, executor_id, routes, actor_id, authority_ref, *, task_id=None):
+    def bind_executor(self, executor_id, routes, actor_id, authority_ref, *, task_id=None, attempt_id=None):
         artifact(authority_ref)
         require(executor_id and routes and set(routes) <= {'native_agent','app_thread'}, 'actual executor routes required')
         for route in routes.values():
@@ -189,6 +189,29 @@ class Runtime:
             if task_id is not None:
                 from demand_routing import bind_guard
                 bind_guard(state, task_id, executor_id)
+            if attempt_id is not None:
+                require(task_id is not None,'original launch task required')
+                launch=state['runtime']['operations'][attempt_id]
+                permit=load_bound(launch['admission'])
+                require(launch.get('operation')=='spawn' and launch.get('task_id')==task_id and
+                    launch.get('attempt_id')==attempt_id and launch.get('launch_identity')=='spawn:'+attempt_id and
+                    launch.get('executor_id') in (None,executor_id) and
+                    launch.get('status') in ('intent','unknown','accepted_unconfirmed','running') and
+                    state['tasks'][task_id]['worker_run'].get('attempt_id') in (None,attempt_id),
+                    'retain the exact original spawn attempt and permit')
+                require(state['tasks'][task_id]['phase'] not in ('completed','cancelled') and
+                    state['tasks'][task_id]['owner_agent_id'] in (None,executor_id), 'current unfinished original owner required')
+                require(all(launch.get(k)==permit.get(k) for k in ('task_id','attempt_id','request_id','permit_id','launch_identity')) and
+                    permit.get('project_id')==self.project_id and permit.get('status')=='granted', 'original admitted permit binding changed')
+                journal=load_bound(authority_ref);context=journal.get('pending_packet',{}).get('context',{})
+                dispatch=state['runtime']['operations'].get(journal.get('request_id'),{})
+                require(journal.get('schema')=='dispatch-host-result/1' and journal.get('actor_id')==actor_id and
+                    context.get('operation_id')==attempt_id and context.get('task_id')==task_id and
+                    context.get('project_id')==self.project_id and journal.get('actual_agent_id')==routes.get('native_agent',{}).get('target_id') and
+                    dispatch.get('operation')=='standard-dispatch' and dispatch.get('task_id')==task_id and
+                    context.get('request_id')==journal.get('request_id') and
+                    context.get('request_digest')==dispatch.get('request_digest') and attempt_id==journal['request_id']+':launch',
+                    'actual original spawn journal required')
             for executor in state['runtime']['executors'].values():
                 for channel, route in routes.items():
                     require(executor['id'] == executor_id or not any(old_channel==channel and
@@ -200,9 +223,16 @@ class Runtime:
                 state['runtime']['executors'][executor_id] = dict(id=executor_id, routes=deepcopy(routes),
                     generation=1, lease='open', execution='unknown', active_children=None, pending_work=None,
                     authority=authority_ref, observation=None)
+            if attempt_id is not None:
+                executor=state['runtime']['executors'][executor_id]
+                require(executor['generation']==(launch.get('generation') or 1), 'original spawn generation changed')
             if task_id is not None:
                 state['tasks'][task_id]['owner_agent_id'] = executor_id
                 state['tasks'][task_id]['worker_run']['owner_agent_id'] = executor_id
+                if attempt_id is not None:
+                    state['tasks'][task_id]['worker_run']['attempt_id']=attempt_id
+                    state['runtime']['operations'][attempt_id]['executor_id']=executor_id
+                    state['runtime']['operations'][attempt_id]['generation']=executor['generation']
                 if state['tasks'][task_id].get('resource_contract')=='new-task/1':
                     from resource_lifecycle import agent
                     agent(state,task_id,authority_ref)
@@ -211,7 +241,8 @@ class Runtime:
 
     def launch(self, task_id, adapter, *, attempt_id, admission, authorized, message, spawn=False, executor_id=None, route_id=None):
         """One bounded host attempt, no auto close and no automatic side-effect retry."""
-        with writer_lock(self.path):
+        with ExitStack() as locks:
+            locks.enter_context(writer_lock(self.path))
             state = self._load(); self._actor(state, adapter.actor_id)
             self._scope(state,task_id)
             task = state['tasks'][task_id]
@@ -273,11 +304,40 @@ class Runtime:
                 route['attempt_id'] = attempt_id
             # Persist before invoking a tool. A crash leaves intent/unknown, never a second send.
             self._save(state, dict(op='launch-intent', task_id=task_id, attempt_id=attempt_id))
-            try:
-                outcome = adapter.call('spawn' if spawn else 'send', target=target, message=message, authorized=authorized)
-            except Exception as error:
-                from host_adapter import error_detail
-                outcome = dict(status='unknown', error_type=type(error).__name__, error=error_detail(error))
+            def call_host(operation, **arguments):
+                nonlocal state, task, record, executor
+                expected_task,expected_operation=deepcopy(task),deepcopy(record)
+                expected_executor=deepcopy(executor)
+                locks.close()
+                try:
+                    try: actual=adapter.call(operation,authorized=True,**arguments)
+                    except Exception as error:
+                        from host_adapter import error_detail
+                        actual=dict(status='unknown',error_type=type(error).__name__,error=error_detail(error))
+                finally:
+                    locks.enter_context(writer_lock(self.path))
+                    state=self._load();task=state['tasks'][task_id];record=state['runtime']['operations'][attempt_id]
+                    executor=state['runtime']['executors'].get(executor_id) if executor_id else None
+                unchanged=task==expected_task and record==expected_operation and executor==expected_executor
+                record.setdefault('host_results',[]).append(dict(operation=operation,result=deepcopy(actual)))
+                try:
+                    self._actor(state,adapter.actor_id);self._scope(state,task_id)
+                    if route_id:
+                        from demand_routing import approved_item
+                        approved_item(state,task_id)
+                        current_route=state['runtime']['intake']['routes'][route_id]
+                        require(current_route.get('attempt_id')==attempt_id and current_route.get('task_id')==task_id,
+                                'original route/attempt changed')
+                        instruction=state['runtime']['intake']['instructions'][current_route['instruction_id']]
+                        artifact(instruction['source'])
+                except (ValueError,KeyError,TypeError,OSError):unchanged=False
+                if not unchanged:
+                    record.update(status='unknown',reason='task, executor or authority changed during host effect; original result retained',
+                                  next_technical_owner=(state.get('delivery') or {}).get('agent_id',adapter.actor_id))
+                    self._save(state,dict(op='launch-conflict',task_id=task_id,attempt_id=attempt_id))
+                return actual,unchanged
+            outcome,unchanged=call_host('spawn' if spawn else 'send',target=target,message=message)
+            if not unchanged:return self._launch_result(state,record)
             record.update(outcome)
             if outcome['status'] == 'accepted':
                 if spawn:
@@ -291,6 +351,7 @@ class Runtime:
                 task['worker_run']['owner_agent_id'] = executor_id
                 task['worker_run']['attempt_id'] = attempt_id
                 record['executor_id'] = executor_id
+                record['generation'] = executor['generation']
                 if task.get('resource_contract')=='new-task/1':
                     from resource_lifecycle import agent
                     agent(state,task_id,admission)
@@ -300,7 +361,8 @@ class Runtime:
                 record.update(status='accepted_unconfirmed', reason='message accepted; observation pending')
                 self._save(state, dict(op='launch-accepted', task_id=task_id, attempt_id=attempt_id))
                 try:
-                    observed = adapter.call('observe', target=executor['routes'][adapter.channel]['target_id'], authorized=True)
+                    observed,unchanged=call_host('observe',target=executor['routes'][adapter.channel]['target_id'])
+                    if not unchanged:return self._launch_result(state,record)
                     executor['execution'] = observed.get('execution','unknown')
                     record['observation'] = observed
                     if executor['execution'] == 'running':
@@ -375,6 +437,16 @@ class Runtime:
     def handoff(self, task_id, actor_id, **options):
         from task_handoff import run
         return run(self, task_id, actor_id, **options)
+
+    def continue_delivery(self, request_ref, actor_id, **options):
+        """Finite delivery continuation; host authority/capabilities are separate from JSON."""
+        from delivery_continuation import run
+        return run(self, request_ref, actor_id, **options)
+
+    def recover_call_locks(self, references, destination, actor_id, *, request_ref=None):
+        """Explicit main-only recovery of preserved, confirmed-dead call locks."""
+        from call_recovery import recover
+        return recover(self, references, destination, actor_id, request_ref=request_ref)
 
     def feedback(self, command, actor_id, *, verify_display=None):
         """Record notification transport/display facts, never permissions or acceptance."""

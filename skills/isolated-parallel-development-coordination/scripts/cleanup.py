@@ -1,5 +1,6 @@
 """Task cleanup state in the canonical ledger; finite scoped side-effect callbacks."""
 from copy import deepcopy
+from contextlib import ExitStack
 from pathlib import Path
 
 from coordination import writer_lock
@@ -153,28 +154,32 @@ def eligibility(runtime,state,task_id,preservation_ref,scope,*,require_pr_closed
 
 def run(runtime,task_id,operation_id,preservation_ref,invoke,actor_id,*,authorized=False,scope='fixture_only'):
     require(authorized is True and operation_id,'separate exact cleanup authorization required')
-    with writer_lock(runtime.path):
+    with ExitStack() as locks:
+        locks.enter_context(writer_lock(runtime.path))
         state=runtime._load();authority=runtime._resource_actor(state,actor_id,task_id);runtime._scope(state,task_id)
         eligibility(runtime,state,task_id,preservation_ref,scope)
         operations=state['runtime']['operations']
-        if operation_id in operations:
+        continuing=operation_id in operations
+        if continuing:
             old=operations[operation_id]
-            require(old['operation']=='cleanup' and old['task_id']==task_id,'cleanup ID belongs elsewhere')
-            return deepcopy(old)
+            require(old['operation']=='cleanup' and old['task_id']==task_id and old['preservation']==preservation_ref and
+                    old['scope']==scope,'cleanup ID belongs elsewhere')
+            if old['status']=='cleanup_completed':return deepcopy(old)
         task=state['tasks'][task_id]
         resources=[r for r in state['runtime'].get('resources',{}).values() if r['task_id']==task_id]
-        record=dict(operation='cleanup',task_id=task_id,operation_id=operation_id,status='intent',results={},preservation=preservation_ref,
+        record=operations[operation_id] if continuing else dict(operation='cleanup',task_id=task_id,operation_id=operation_id,status='intent',results={},preservation=preservation_ref,
                     cleanup_authorized=authorized,scope=scope)
         if authority:record.update(resource_authority=authority,actor_id=actor_id)
         operations[operation_id]=record
         task['cleanup']=dict(status='pending_cleanup',operation_id=operation_id,owner=actor_id)
-        runtime._save(state,dict(op='cleanup-intent',task_id=task_id))
-        for resource in resources:
-            rid=resource['id']
+        if not continuing:runtime._save(state,dict(op='cleanup-intent',task_id=task_id))
+        for rid in [r['id'] for r in resources]:
+            resource=state['runtime']['resources'][rid]
             if resource['cleanup_status']=='cleaned':
                 record['results'][rid]=dict(status='cleaned',already_confirmed=True);continue
             if resource['cleanup_status'] in ('intent','unknown'):
                 record['results'][rid]=dict(status='unknown',reason='inspect previous uncertain effect; do not retry');continue
+            if continuing and resource['cleanup_status']=='failed':continue
             try:
                 require(not resource.get('protected'),'protected resource')
                 require(all(state['tasks'][k]['phase'] in ('completed','cancelled') for k in resource['references']),'other task still references resource')
@@ -227,7 +232,23 @@ def run(runtime,task_id,operation_id,preservation_ref,invoke,actor_id,*,authoriz
                 resource['cleanup_proof']=ref(proof_path)
                 runtime._save(state,dict(op='resource-cleanup-intent',resource_id=rid))
                 # No shell or arbitrary command from JSON; invoke is host-owned.
-                result=invoke(deepcopy(resource))
+                bound=deepcopy(resource);task_before=deepcopy(task)
+                locks.close()
+                try:
+                    result=invoke(bound)
+                finally:
+                    locks.enter_context(writer_lock(runtime.path))
+                    state=runtime._load();task=state['tasks'][task_id]
+                    record=state['runtime']['operations'][operation_id];operations=state['runtime']['operations']
+                    resource=state['runtime']['resources'][rid]
+                    resources=[r for r in state['runtime']['resources'].values() if r['task_id']==task_id]
+                record.setdefault('external_results',{})[rid]=deepcopy(result)
+                if resource!=bound:
+                    record.setdefault('conflicts',{})[rid]='resource changed during external call; current canonical facts retained'
+                    runtime._save(state,dict(op='resource-cleanup-conflict',resource_id=rid))
+                    continue
+                require(task==task_before,'task changed during cleanup; actual result retained')
+                runtime._resource_actor(state,actor_id,task_id);runtime._scope(state,task_id)
                 require(isinstance(result,dict) and result.get('status') in ('cleaned','failed','unknown'),'explicit cleanup result required')
                 if result['status']=='cleaned':
                     artifact(result['evidence'])
@@ -238,12 +259,15 @@ def run(runtime,task_id,operation_id,preservation_ref,invoke,actor_id,*,authoriz
                         executor=state['runtime']['executors'][resource['executor_id']]
                         require(executor['generation']==resource['generation'],'agent generation changed')
                         executor.update(lease='closed',execution='unknown')
+                    candidate=deepcopy(state)
+                    candidate['runtime']['resources'][rid].update(cleanup_status='cleaned',cleanup_result=deepcopy(result))
+                    eligibility(runtime,candidate,task_id,preservation_ref,scope,resource_paths=False)
             except Exception as error:
-                result=dict(status='failed' if resource['cleanup_status']!='intent' else 'unknown',reason=type(error).__name__)
+                result=dict(status='failed' if resource['cleanup_status']!='intent' else 'unknown',reason=str(error),error_type=type(error).__name__)
             resource['cleanup_status']=result['status'];resource['cleanup_result']=deepcopy(result);record['results'][rid]=deepcopy(result)
             runtime._save(state,dict(op='resource-cleanup-outcome',resource_id=rid))
         executor=state['runtime']['executors'][task['owner_agent_id']]
-        complete=all(r['cleanup_status']=='cleaned' for r in resources) and executor['lease']=='closed'
+        complete=all(r['cleanup_status']=='cleaned' for r in resources) and executor['lease']=='closed' and not record.get('conflicts')
         if executor['lease']!='closed':record['agent_context']='not_confirmed_closed'
         record['status']='cleanup_completed' if complete else 'pending_cleanup'
         task['cleanup'].update(status=record['status'],results=deepcopy(record['results']))

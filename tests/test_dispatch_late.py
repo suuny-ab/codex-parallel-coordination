@@ -1,5 +1,6 @@
 """Real finite subprocess/deadline; all returned native identities are fixtures."""
 import json
+from copy import deepcopy
 import os
 from pathlib import Path
 import subprocess
@@ -85,22 +86,48 @@ console.log(JSON.stringify({retained,stored,duplicate,conflict,verified,
         state = fixture.runtime._load()
         self.assertEqual(state['tasks']['A']['worker_run']['status'], 'running' if mode == 'handoff' else 'queued')
         if mode == 'killed_child':
-            self.assertIsNone(data['verified']['result']['owner_agent_id'])
-            self.assertEqual(data['verified']['result']['reported_actual_agent_id'], 'synthetic-late-agent')
-            self.assertIn('writer lock exists', data['verified']['result']['reason'])
-            self.assertFalse(data['verified']['result']['identity_binding_verified'])
-            with self.assertRaisesRegex(ValueError, 'writer lock exists'):
-                fixture.dispatch.run(fixture.request)
-            return
+            self.assertFalse(fixture.runtime.path.with_suffix('.json.lock').exists())
+            self.assertFalse((fixture.runtime.directory/'standard-dispatch-driver.lock').exists())
         self.assertEqual(data['verified']['result']['owner_agent_id'], 'native_agent:synthetic-late-agent', data['verified'])
+        self.assertEqual(state['tasks']['A']['worker_run']['attempt_id'],'dispatch-A:launch')
+        self.assertEqual(state['runtime']['operations']['dispatch-A:launch']['executor_id'],'native_agent:synthetic-late-agent')
+        self.assertEqual(state['runtime']['operations']['dispatch-A:launch']['request_id'],'dispatch-A:capacity')
+        self.assertEqual(state['runtime']['operations']['dispatch-A:launch']['permit_id'],
+                         fixture.controller.read()[0]['capacity_requests']['dispatch-A:capacity']['permit_id'])
         if mode != 'handoff':
             self.assertNotEqual(state['runtime']['executors']['native_agent:synthetic-late-agent']['execution'], 'running')
         self.assertIn('A:agent', state['runtime']['resources'])
         self.assertEqual(state['runtime']['operations']['dispatch-A:launch']['status'],
-                         'running' if mode == 'handoff' else 'accepted_unconfirmed' if mode == 'observe' else 'unknown')
+                         'running' if mode == 'handoff' else 'accepted_unconfirmed' if mode == 'observe' else
+                         'intent' if mode == 'killed_child' else 'unknown')
         before = len(fixture.calls)
         self.assertEqual(fixture.dispatch.run(fixture.request)['status'], 'needs_reconcile')
         self.assertEqual(len(fixture.calls), before)
+        return data
+
+    def test_recovered_spawn_keeps_original_permit_generation_owner_task_and_request(self):
+        from evidence import load_bound,write_atomic
+        data=self.probe('child_exit');f=self.host.fixture
+        original=f.runtime.path.read_bytes();state=f.runtime._load();identity='native_agent:synthetic-late-agent'
+        reference=data['retained']['result']['host_result'];routes=state['runtime']['executors'][identity]['routes']
+        for field in ('permit','generation','owner','cancelled','request','task'):
+            changed=deepcopy(state);proof=reference;task='A'
+            if field=='permit':changed['runtime']['operations']['dispatch-A:launch']['permit_id']='wrong-permit'
+            elif field=='generation':changed['runtime']['executors'][identity]['generation']+=1
+            elif field=='owner':
+                changed['tasks']['A']['owner_agent_id']='other-actor';changed['tasks']['A']['worker_run']['owner_agent_id']='other-actor'
+            elif field=='cancelled':changed['tasks']['A']['phase']='cancelled'
+            elif field=='request':
+                raw=load_bound(reference);raw['request_id']='other-request';raw['pending_packet']['context']['request_id']='other-request'
+                proof=f.json('wrong-original-request.json',raw)
+            else:task='other-task'
+            write_atomic(f.runtime.path,changed);before=f.runtime.path.read_bytes()
+            with self.assertRaises((ValueError,KeyError),msg=field):
+                f.runtime.bind_executor(identity,routes,f.actor,proof,task_id=task,attempt_id='dispatch-A:launch')
+            self.assertEqual(before,f.runtime.path.read_bytes(),field)
+            f.runtime.path.write_bytes(original)
+        self.assertEqual(load_bound(reference)['actual_agent_id'],'synthetic-late-agent')
+        self.assertEqual(f.controller.read()[0]['capacity_requests']['dispatch-A:capacity']['status'],'granted')
 
     def test_child_exit_late_result_and_duplicate_conflict(self):
         self.probe('child_exit')
