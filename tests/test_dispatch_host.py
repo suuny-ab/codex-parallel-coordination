@@ -8,6 +8,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_dispatch
+from evidence import load_bound
 
 
 @unittest.skipUnless(shutil.which('node'), 'Node required for finite host transport')
@@ -25,7 +26,7 @@ class HostTransport(unittest.TestCase):
             requestMeta=dict(threadId=f.actor, sessionId='irrelevant-parent-session'),
             approvalOrigin=f.origin, availableTools=['multi_agent_v1__spawn_agent', 'multi_agent_v1__wait_agent', 'send_input'])
 
-    def run_host(self):
+    def run_host(self, spawn_reply=None):
         f = self.fixture
         config = f.json('host-config.json', self.config)
         module = (test_dispatch.ROOT / 'skills/isolated-parallel-development-coordination/scripts/dispatch_host.mjs').as_uri()
@@ -40,16 +41,25 @@ const argumentsUsed = [];
 while (packet.kind === 'host_call') {
   calls.push(packet.tool);
   argumentsUsed.push(packet.arguments);
-  const replies = {multi_agent_v1__spawn_agent: {agent_id:'synthetic-stdio-agent'},
+  const replies = {multi_agent_v1__spawn_agent: SPAWN_REPLY,
     multi_agent_v1__wait_agent:{status:{'synthetic-stdio-agent':'running'},timed_out:true}, send_input:{submission_id:'fixture'}};
   packet = await session.reply(packet.tool, replies[packet.tool]);
 }
 console.log(JSON.stringify({packet, calls, argumentsUsed, stderr:session.stderr}));
-""".replace('MODULE', json.dumps(module))
+""".replace('MODULE', json.dumps(module)).replace('SPAWN_REPLY', json.dumps(
+            spawn_reply if spawn_reply is not None else dict(agent_id='synthetic-stdio-agent')))
         result = subprocess.run(['node', '--input-type=module', '-e', program, config['path']],
                                 capture_output=True, encoding='utf-8', timeout=55)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
+
+    def test_transport_preserves_actual_identity_even_with_capacity_error(self):
+        result = self.run_host(dict(agent_id='synthetic-stdio-agent',
+            error=dict(code='agent_capacity_exceeded', message='agent thread limit reached')))
+        self.assertEqual(result['packet']['result']['status'], 'dispatched')
+        self.assertEqual(result['calls'].count('multi_agent_v1__spawn_agent'), 1)
+        self.assertEqual(load_bound(result['packet']['result']['transport_evidence'][0])['actual_agent_id'],
+            'synthetic-stdio-agent')
 
     def test_transport_executes_bounded_fixture_actions_and_preserves_raw_receipts(self):
         result = self.run_host()

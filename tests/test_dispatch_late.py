@@ -54,7 +54,8 @@ await exited;
 const originalRequest = mode === 'request_changed' ? await fs.readFile(config.request.path) : null;
 if (originalRequest) await fs.writeFile(config.request.path, Buffer.concat([originalRequest, Buffer.from([10])]));
 const raw = mode === 'observe' ? {status:{'synthetic-late-agent':'running'}} :
-  mode === 'handoff' ? {submission_id:'fixture-late-handoff'} : {agent_id:'synthetic-late-agent',nickname:'fixture'};
+  mode === 'handoff' ? {submission_id:'fixture-late-handoff'} : {agent_id:'synthetic-late-agent',nickname:'fixture',
+    ...(mode === 'error_identity' ? {error:{code:'agent_capacity_exceeded',message:'agent thread limit reached'}} : {})};
 const retained = await session.reply(awaiting.tool, raw);
 if (originalRequest) await fs.writeFile(config.request.path, originalRequest);
 const stored = JSON.parse(await fs.readFile(retained.result.host_result.path, 'utf8'));
@@ -83,7 +84,9 @@ console.log(JSON.stringify({retained,stored,duplicate,conflict,verified,
         self.assertEqual(data['retained']['result']['status'], 'needs_reconcile')
         if mode not in ('observe', 'handoff'):
             self.assertEqual(data['retained']['result']['actual_agent_id'], 'synthetic-late-agent')
-            self.assertEqual(data['stored']['response']['result'], dict(agent_id='synthetic-late-agent', nickname='fixture'))
+            expected = dict(agent_id='synthetic-late-agent', nickname='fixture')
+            if mode == 'error_identity': expected['error'] = dict(code='agent_capacity_exceeded', message='agent thread limit reached')
+            self.assertEqual(data['stored']['response']['result'], expected)
             self.assertEqual(data['stored']['pending_packet']['arguments'], {'message': data['stored']['pending_packet']['arguments']['message']})
         self.assertEqual(data['stored']['request_id'], fixture.request['request_id'])
         self.assertEqual(data['duplicate']['result']['host_result'], data['retained']['result']['host_result'])
@@ -112,6 +115,12 @@ console.log(JSON.stringify({retained,stored,duplicate,conflict,verified,
         self.assertEqual(fixture.dispatch.run(fixture.request)['status'], 'needs_reconcile')
         self.assertEqual(len(fixture.calls), before)
         return data
+
+    def test_late_error_with_actual_identity_retains_author_instead_of_capacity_retry(self):
+        data = self.probe('error_identity')
+        self.assertEqual(data['stored']['actual_agent_id'], 'synthetic-late-agent')
+        self.assertEqual(self.host.fixture.runtime._load()['tasks']['A']['owner_agent_id'],
+            'native_agent:synthetic-late-agent')
 
     def test_recovered_spawn_keeps_original_permit_generation_owner_task_and_request(self):
         from evidence import load_bound,write_atomic

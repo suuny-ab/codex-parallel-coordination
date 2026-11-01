@@ -67,7 +67,11 @@ def run_dispatch(bootstrap, profile, host, request, runtime, recovered):
     evidence = Path(profile['evidence_root'])
     def record(tool, kind, value):
         evidence.mkdir(parents=True, exist_ok=True)
-        path = evidence / ('host-' + fingerprint([request['request_id'], tool, kind]) + '.json')
+        launch = runtime._load()['runtime']['operations'].get(request['request_id']+':launch', {})
+        sequence = len(launch.get('capacity_retries', []))
+        identity = [request['request_id'], tool, kind]
+        if sequence: identity += ['capacity', sequence]
+        path = evidence / ('host-' + fingerprint(identity) + '.json')
         if path.exists():
             raise ValueError('host effect already has evidence; reconcile original operation')
         write_atomic(path, value)
@@ -105,7 +109,15 @@ def run_dispatch(bootstrap, profile, host, request, runtime, recovered):
     bridge = ResourceBridge(runtime, controller, artifacts, profile['evidence_root'])
     dispatch = StandardDispatch(runtime, bridge, git, developer, integration, host['user_origin'], profile['integration_target'])
     try:
-        if bootstrap.get('rebase_queued') is True:
+        if bootstrap.get('retry_capacity') is True:
+            require(not any(bootstrap.get(k) for k in ('reconcile_result','rebase_queued','prehost_recovery')),
+                    'separate explicit capacity continuation required')
+            result = dispatch.retry_capacity(request, authorized=True)
+        elif bootstrap.get('prehost_recovery'):
+            require(not bootstrap.get('reconcile_result') and not bootstrap.get('rebase_queued'),
+                    'separate original prehost continuation required')
+            result = dispatch.resume_prehost(request, bootstrap['prehost_recovery'], authorized=True)
+        elif bootstrap.get('rebase_queued') is True:
             require(not bootstrap.get('reconcile_result'), 'separate queued rebase and host reconciliation required')
             result = dispatch.rebase_queued(request, authorized=True)
         else:

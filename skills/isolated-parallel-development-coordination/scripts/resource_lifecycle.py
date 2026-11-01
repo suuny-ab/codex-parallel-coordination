@@ -185,7 +185,7 @@ def preserve(runtime, task_id, destination, handoff, actor, *, merge_verificatio
         state = runtime._load(); runtime._resource_actor(state, actor, task_id); runtime._scope(state, task_id)
         task = state['tasks'][task_id]
         require(task['phase'] == 'completed' and task.get('merge', {}).get('verified'), 'verified main completion required')
-        from preservation_contract import captures, CAPTURE_SLOTS
+        from preservation_contract import captures, CAPTURE_SLOTS, extends
         classified = captures(state, task_id)
         inventory(state, task_id)
         report = report_for(state, task_id)
@@ -196,6 +196,7 @@ def preserve(runtime, task_id, destination, handoff, actor, *, merge_verificatio
             binding=preserved_binding(task),destination=str(destination),handoff=handoff,scope=scope,
             merge_verification=merge_verification or task['merge']['proof'],extra=list(extra))
         addition = None
+        amendment = io_path(destination/'preservation-classification-intent.json')
         if operation_id:
             operation=state['runtime']['operations'][operation_id]
             require(operation.get('operation')=='continuation-effect' and operation['task_id']==task_id and
@@ -204,14 +205,18 @@ def preserve(runtime, task_id, destination, handoff, actor, *, merge_verificatio
             require(operation_id and marker.is_file(),'new absolute preservation directory or original marked copy required')
             prior=load_bound(ref(marker))
             prior_context = dict(context)
-            if task.get('preservation_classification') and 'preservation_classification' not in prior.get('binding', {}):
+            current_classification = task.get('preservation_classification')
+            old_classification = prior.get('binding', {}).get('preservation_classification')
+            if current_classification!=old_classification and extends(current_classification, old_classification):
                 prior_context['binding'] = dict(context['binding'])
-                prior_context['binding'].pop('preservation_classification')
+                if old_classification is None: prior_context['binding'].pop('preservation_classification')
+                else: prior_context['binding']['preservation_classification'] = old_classification
                 require(all(prior.get(key)==value for key,value in prior_context.items()),'preservation resume binding changed')
                 # Append the exact classification to the same operation; keep the old
                 # marker and failed partial bytes intact for review.
-                amendment = io_path(destination/'preservation-classification-intent.json')
                 addition = dict(context, original_intent=ref(marker))
+                if amendment.exists() and load_bound(ref(amendment))!=addition:
+                    amendment = io_path(destination/('preservation-classification-intent-'+fingerprint(current_classification)+'.json'))
                 if amendment.exists():
                     require(load_bound(ref(amendment))==addition,'preservation classification intent changed')
             else:
@@ -319,7 +324,6 @@ def preserve(runtime, task_id, destination, handoff, actor, *, merge_verificatio
             project_id=runtime.project_id, task_id=task_id, binding=preserved_binding(task), source=report['source'], scope=scope)
         if git_sources: manifest['git_sources'] = git_sources
         if task.get('preservation_classification'): manifest['classification'] = task['preservation_classification']
-        amendment = io_path(destination/'preservation-classification-intent.json')
         if amendment.exists(): manifest['classification_intent'] = ref(amendment)
         if remote_verification:manifest['remote_verification']=remote_verification
         path = destination/'preservation.json'; write_atomic(path, manifest); reference = ref(path)

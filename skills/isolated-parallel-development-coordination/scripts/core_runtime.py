@@ -67,7 +67,7 @@ class Runtime:
         state['history'].append(dict(revision=state['revision'], operation=operation))
         from stage_feedback import capture
         if operation['op'] != 'stage-feedback' or operation['action'] == 'record-installation':
-            capture(state, [operation['task_id']] if operation.get('task_id') else None)
+            capture(state, operation.get('task_ids', [operation['task_id']] if operation.get('task_id') else None))
         validate(state)
         write_atomic(self.path, state)
 
@@ -117,7 +117,7 @@ class Runtime:
 
     def routing(self, command, actor_id, *, user_origin=None):
         """Public intake mutations share the task ledger, lock and audit history."""
-        from demand_routing import apply as route, intake
+        from demand_routing import apply as route, intake, feedback_tasks
         with writer_lock(self.path):
             original = self._load()
             # Reject role spoofing before dedup or recording a command.
@@ -139,7 +139,8 @@ class Runtime:
                 result = dict(status='rejected', reason=str(error))
             intake(state)['events'][command['event_id']] = dict(fingerprint=digest, command=deepcopy(command),
                 actor_id=actor_id, result=deepcopy(result))
-            self._save(state, dict(op='routing', event_id=command['event_id'], status=result['status']))
+            self._save(state, dict(op='routing', event_id=command['event_id'], status=result['status'],
+                task_ids=feedback_tasks(state, command) if result['status'] == 'recorded' else []))
             return result
 
     def routing_status(self):
@@ -237,9 +238,10 @@ class Runtime:
                     from resource_lifecycle import agent
                     agent(state,task_id,authority_ref)
             if not old or task_id is not None:
-                self._save(state, dict(op='bind-executor', executor_id=executor_id))
+                self._save(state, dict(op='bind-executor', executor_id=executor_id, task_id=task_id))
 
-    def launch(self, task_id, adapter, *, attempt_id, admission, authorized, message, spawn=False, executor_id=None, route_id=None):
+    def launch(self, task_id, adapter, *, attempt_id, admission, authorized, message, spawn=False, executor_id=None, route_id=None,
+               prehost_recovery=None, dispatch_evidence_root=None, retry_capacity=False):
         """One bounded host attempt, no auto close and no automatic side-effect retry."""
         with ExitStack() as locks:
             locks.enter_context(writer_lock(self.path))
@@ -251,13 +253,27 @@ class Runtime:
                 from resource_lifecycle import inventory
                 inventory(state,task_id,author=False)
             operations = state['runtime']['operations']
-            if attempt_id in operations:
+            previous = operations.get(attempt_id)
+            require(type(retry_capacity) is bool and not (retry_capacity and prehost_recovery),
+                    'separate explicit capacity and zero-host recovery required')
+            if retry_capacity:
+                require(previous and spawn and executor_id is None and previous['admission']==admission,
+                        'capacity retry must reuse original spawn admission')
+                from capacity_recovery import check as capacity_check
+                capacity_check(self, state, attempt_id, adapter.actor_id)
+            if previous:
                 require(operations[attempt_id]['task_id'] == task_id, 'attempt belongs to another task')
                 require(operations[attempt_id].get('route_id') == route_id, 'attempt belongs to another routing decision')
-                return self._launch_result(state,operations[attempt_id])
+                if prehost_recovery is None and not retry_capacity:
+                    return self._launch_result(state,operations[attempt_id])
+                if prehost_recovery is not None:
+                    from prehost_recovery import check
+                    check(self, state, attempt_id, prehost_recovery, adapter.actor_id, dispatch_evidence_root)
+                require(spawn and executor_id is None and previous['admission'] == admission,
+                        'recovery must reuse original spawn admission')
             require(task['requirements'] and task['worker_run']['status'] == 'queued', 'task must be queued')
             require(not any(o.get('task_id')==task_id and o.get('operation') in ('spawn','send') and
-                    o['status'] in ('intent','unknown','accepted_unconfirmed') for o in operations.values()),
+                    o['status'] in ('intent','unknown','accepted_unconfirmed') and o is not previous for o in operations.values()),
                     'previous host effect uncertain; reconcile before another attempt')
             # RESOURCE owns permit truth; caller passes its granted receipt, not a task stage.
             permit = load_bound(admission)
@@ -284,10 +300,24 @@ class Runtime:
                         'executor has uncompleted actions or children')
                 require(not any(t['owner_agent_id'] == executor_id for t in running), 'executor already executing')
             from demand_routing import launch_guard
-            route = launch_guard(state, task_id, route_id, spawn=spawn, executor_id=executor_id, message=message)
+            probe = deepcopy(state) if prehost_recovery or retry_capacity else state
+            if prehost_recovery or retry_capacity:
+                require(previous is not None, 'original launch intent required')
+                probe['runtime']['intake']['routes'][route_id]['attempt_id'] = None
+            route = launch_guard(probe, task_id, route_id, spawn=spawn, executor_id=executor_id, message=message)
+            if prehost_recovery or retry_capacity:
+                route = state['runtime']['intake']['routes'][route_id]
             record = dict(operation='spawn' if spawn else 'send', task_id=task_id, attempt_id=attempt_id,
                 request_id=permit['request_id'], permit_id=permit['permit_id'], admission=admission,
                 status='intent', executor_id=executor_id,launch_identity=permit['launch_identity'],route_id=route_id)
+            if prehost_recovery:
+                record = previous
+                record.setdefault('prehost_recoveries', []).append(dict(observation=prehost_recovery,
+                    original={k: deepcopy(v) for k, v in previous.items() if k != 'prehost_recoveries'}))
+                state['runtime']['operations'][attempt_id.removesuffix(':launch')]['driver_owner_pid'] = os.getpid()
+            if retry_capacity:
+                record['capacity_retries'] = deepcopy(previous.get('capacity_retries', [])) + [
+                    {key:deepcopy(value) for key,value in previous.items() if key!='capacity_retries'}]
             operations[attempt_id] = record
             if not adapter.capabilities()['spawn' if spawn else 'existing_message']:
                 record.update(status='unsupported',reason='required authorized host capability unavailable')
@@ -311,6 +341,8 @@ class Runtime:
                     actor_id=adapter.actor_id,operation=operation,arguments=deepcopy(arguments),task=deepcopy(task),
                     launch={key:deepcopy(record.get(key)) for key in ('operation','request_id','permit_id','admission',
                         'executor_id','generation','launch_identity','route_id')})
+                if record.get('capacity_retries'):
+                    binding['capacity_sequence'] = len(record['capacity_retries'])
                 record.setdefault('callback_captures',{})[operation]=binding
                 self._save(state,dict(op='launch-callback-intent',task_id=task_id,attempt_id=attempt_id,operation=operation))
                 expected_task,expected_operation=deepcopy(task),deepcopy(record)

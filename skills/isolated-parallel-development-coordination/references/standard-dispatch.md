@@ -98,6 +98,18 @@ text(packet);
 
 ## 状态、证据和恢复
 
+实际宿主明确拒绝容量且未创建作者时，原主会话可在腾出真实名额后显式接续：Python使用 `StandardDispatch.retry_capacity(original_request, authorized=True)`，受信stdio宿主创建正常有限 `DispatchSession` 时带 `retryCapacity: true`。它只接受原canonical容量错误及完整callback原件，重新核对原批准、路由、最新本地及远端main、原分支和干净工作树、仍granted的唯一许可及完整RESOURCE绑定。原task/request/attempt/tree不变；旧失败和每次callback均保留，按容量接续序号隔离新日志，原45秒时限不变。普通run和重复已成功的接续不再spawn；未知结果、已有作者、未核证的retained结果或交接意图、错误来源或被篡改的回执拒绝，不与零调用恢复、重基线或结果核证混用。错误同时带实际作者ID时保留该身份并观察，不能按无作者的容量拒绝重派。插件许可与宿主真实名额分别报告，容量拒绝不等于启动成功。
+
+属于已核任务的派发保存带原 `task_id`；routing 从已验证的命令/记录推导 `task_ids`。单任务保存仅采集当前任务，批量摘要、批准及依赖采集所有受影响任务；拒绝的元数据命令不采集任务。真正全局保存仍保留全范围采集。其它任务已有状态及未展示通知不因单任务保存被刷新或确认。
+
+### intent 后、callback 前的显式恢复
+
+原受信宿主仍持有原 `DispatchSession` 对象时，可以显式执行 `var resumed = await dispatchSession.resumePrehost(nodeRepl.requestMeta)`，再用上面的固定驱动调用 `resumed.next/reply`。外层继续使用 `timeout_ms: 50000`，新的有限接续仍为原 45 秒上限；不会自动循环重启。并发/重复调用原对象的恢复方法返回同一接续对象。旧版本真实实例可由已审新模块执行 `DispatchSession.prototype.resumePrehost.call(originalSession, nodeRepl.requestMeta)`；必须先核对原对象、原请求/批准/profile及两版源码来源，不接受同形 plain object 或任务文件替代。
+
+恢复仅适用于原子进程已实际退出、原会话已结束、已暴露 host packet 数为零，且没有 pending/reply/retained result 的情况。原对象将实际终态写入永久 evidence_root，并以私有宿主 sideband 传给接续入口；单独一份声称零调用的 JSON 不授予恢复权限。生成 sideband 的实现只存在于模块闭包，不暴露可绕过来源门禁的 prototype helper。CORE 在锁内再次核对原请求、actor、owner journal 的 PID/创建身份及死亡状态、原 intent/route/许可/任务版本、当前 RESOURCE granted，以及不存在 callback/host intent/result/实际 owner。缺 marker 只是必要条件，不能单独证明未调用。
+
+通过后复用原 request/task/attempt、工作树和许可，保存原 intent 快照及恢复证据；不删除原失败或申请/释放许可。已有 callback、真实身份、丢失/迟到返回、仍活跃/未知进程、PID复用、错误请求/项目/任务、变更路由/权限、缺失或冲突来源均拒绝恢复，不重发。原对象丢失或来源不足时保留未知，由获权 ROOT/集成者核证，不以新文件重建宿主对象。一次接续若再次中断，不自动或反复重置 intent。
+
 同一 canonical `runtime.operations` 保存请求指纹、工作树意图、RESOURCE 许可、CORE launch 及交接意图；没有第二份任务队列。分支创建前核对本地与远端 main、真实路径和当前资源策略；只使用本次命令的 `-c core.longpaths=true`。已有工作树只有经原公开资源入口登记且与本次批准、路径和分支一致才可使用。
 
 `queued` 只表示准入等待；没有工作树或 host 调用。Git 创建丢响应后只观察已记录路径，核实实际分支和 HEAD 后继续，不重新 add。spawn 前落 launch intent；spawn 接受后在单独 observe 前持久化实际身份。`unknown/accepted_unconfirmed` 保留原操作和资源，不重发、不换 id，投影显示“已派发，执行状态待核实”。已知身份的后续观察及报告走[有限交接](task-handoff.md)。原入口实际 running 才向已授权集成者发一次交接；接受交接不代表独审或最终交付。交接未知也不自动重发。
@@ -112,6 +124,6 @@ raw host intent/result 和准入、交接回执保存于 profile 的永久外部
 
 每次有限入口先通过现有 `Runtime.recover_call_locks` 检查本项目固定的 ledger/driver 两个锁路径；仅额外转发受信 profile 的 `dispatch_evidence_root`，内部复用 `recover_dispatch_locks` 核验。新派工的锁引用外部 owner journal，绑定原 project/task/request digest、受信 actor、PID 和进程创建时间；先保全原锁字节、当前账本指纹和进程观察，再双检死亡、进程身份、账本字节及锁文件身份。Windows 使用禁止并发写入/替换的删除句柄，只释放核对过的文件，并留下恢复回执。正常 finally 也只释放自己创建的锁，不删除替换者。Git 预检和创建树的等待释放共享 driver 锁，重新进入时核对 revision。旧派工恢复不能绕过创建身份门槛；原 delivery-continuation 保全恢复分支保持其既有边界。
 
-活跃写者、PID复用、错请求/项目/任务、未知进程、并发换锁/账本变化、旧锁缺少创建身份或来源均拒绝，保留原结果及集成者责任。自动死锁恢复目前限 Windows；其它平台保留拒绝，不以 PID 不存在猜测身份。树意图已存在但树结果未知时只观察原路径，不重建；CORE 的原 launch intent 一旦存在便不重复 native 调用。没有 CORE launch intent、没有 host intent 且仍为原 launch_pending 的明确间隙才可继续原 attempt。RESOURCE 许可保持原样，不申请或释放另一许可；后续观察和交付继续 handoff/work-cycle。
+活跃写者、PID复用、错请求/项目/任务、未知进程、并发换锁/账本变化、旧锁缺少创建身份或来源均拒绝，保留原结果及集成者责任。自动死锁恢复目前限 Windows；其它平台保留拒绝，不以 PID 不存在猜测身份。树意图已存在但树结果未知时只观察原路径，不重建；CORE 原 intent 默认去重，只有上述受信零调用终态允许显式接续。没有 CORE launch intent、没有 host intent 且仍为原 launch_pending 的明确间隙保持既有原 attempt 接续语义。RESOURCE 许可保持原样，不申请或释放另一许可；后续观察和交付继续 handoff/work-cycle。
 
-验证分开报告：真实 Git/RESOURCE 与 stdio 桥接、synthetic native fixtures、当前宿主可用能力、真实新任务派发。最终一项只有合入并按独立授权更新本机后，以另行获批的新开发需求验证；不得为验工具自造任务。
+验证分开报告：保存组件耗时、真实 Git/RESOURCE 与 stdio 桥接、synthetic native fixtures、实际 native 验收。完整 native 验收由获权 ROOT/集成者按已审源码与当前既有需求执行；不得为验工具自造任务。作者当前受信外部派发也不证明 StandardDispatch SDK 已通过。

@@ -74,10 +74,19 @@ def approved(state, task_id, record):
         token = (original['path'], original['sha256'])
         require(token not in seen, 'duplicate capture classification')
         seen.add(token)
+    previous = record.get('previous')
+    if previous:
+        old = approved(state, task_id, previous)
+        require(declaration.get('previous')==previous['declaration'] and declaration.get('reason') and
+            record['authority']==previous['authority'] and record['binding']==previous['binding'] and
+            len(record['captures'])>len(old) and all(row in record['captures'] for row in old),
+            'classification revision must retain every original capture and binding')
+    else:
+        require(not declaration.get('previous'), 'classification revision history missing')
     return record['captures']
 
 
-def classify(runtime, task_id, declaration_ref, actor_id, *, authorized=False):
+def classify(runtime, task_id, declaration_ref, actor_id, *, authorized=False, previous_declaration=None):
     require(authorized is True, 'explicit capture classification authorization required')
     with writer_lock(runtime.path):
         state = runtime._load(); runtime._scope(state, task_id)
@@ -90,12 +99,20 @@ def classify(runtime, task_id, declaration_ref, actor_id, *, authorized=False):
         declaration = load_bound(declaration_ref)
         record = dict(binding=binding(state, task_id), authority=task.get('resource_authority'),
                       declaration=declaration_ref, actor_id=actor_id, captures=declaration.get('captures'))
+        previous = task.get('preservation_classification')
+        if previous and previous['declaration']==declaration_ref:
+            require(previous['actor_id']==actor_id, 'classification caller changed')
+            for row in approved(state, task_id, previous): artifact(row['original'])
+            return deepcopy(previous)
+        if previous:
+            require(previous_declaration==previous['declaration'] and
+                declaration.get('previous')==previous_declaration,
+                'original classification cannot be replaced without its exact predecessor')
+            record['previous'] = deepcopy(previous)
+        else:
+            require(previous_declaration is None, 'original classification predecessor missing')
         approved(state, task_id, record)
         for row in record['captures']: artifact(row['original'])
-        previous = task.get('preservation_classification')
-        if previous:
-            require(previous==record, 'original classification cannot be replaced')
-            return deepcopy(previous)
         task['preservation_classification'] = record
         runtime._save(state, dict(op='classify-preservation', task_id=task_id, declaration=declaration_ref))
         return deepcopy(record)
@@ -104,6 +121,15 @@ def classify(runtime, task_id, declaration_ref, actor_id, *, authorized=False):
 def captures(state, task_id):
     record = state['tasks'][task_id].get('preservation_classification')
     return approved(state, task_id, record) if record else []
+
+
+def extends(record, previous):
+    """The original immutable classification remains an ancestor of each revision."""
+    if previous is None: return bool(record)
+    while record:
+        if record==previous: return True
+        record = record.get('previous')
+    return False
 
 
 def verify_inventory(state, task_id, inventory):
@@ -115,7 +141,10 @@ def verify_inventory(state, task_id, inventory):
         addition = load_bound(inventory['classification_intent'])
         prior = load_bound(addition['original_intent'])
         previous_binding = dict(inventory['binding'])
-        previous_binding.pop('preservation_classification', None)
+        old_classification = prior['binding'].get('preservation_classification')
+        require(extends(record, old_classification), 'original classification history changed')
+        if old_classification is None: previous_binding.pop('preservation_classification', None)
+        else: previous_binding['preservation_classification'] = old_classification
         require(record and addition.get('binding')==inventory['binding'] and
             prior.get('binding')==previous_binding and all(addition.get(key)==prior.get(key)
             for key in ('project_id','task_id','operation_id','destination','handoff','scope','merge_verification','extra')),

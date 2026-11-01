@@ -27,6 +27,21 @@ def capacity_error(detail):
         'agent thread limit reached' in str(detail.get('message', '')).lower()
 
 
+def spawn_identity(value):
+    """An error cannot erase a structured host creation identity."""
+    values = [value]
+    if isinstance(value.get('raw'), dict): values.append(value['raw'])
+    for candidate in list(values):
+        for block in candidate.get('content', []):
+            if block.get('type') != 'text': continue
+            try: decoded = json.loads(block['text'])
+            except (ValueError, KeyError): continue
+            if isinstance(decoded, dict): values.append(decoded)
+    ids = {row[key] for row in values for key in ('agent_id', 'id') if row.get(key)}
+    require(len(ids) <= 1, 'host returned conflicting creation identities')
+    return next(iter(ids), None)
+
+
 def unwrap(result):
     if isinstance(result, dict) and 'content' in result:
         require(not result.get('isError'), 'host tool rejected operation')
@@ -83,20 +98,27 @@ class HostAdapter:
             raw = unwrap(invoked)
         except Exception as error:
             detail = error_detail(error)
+            returned = spawn_identity(detail) if operation == 'spawn' else None
+            if returned:
+                return dict(status='accepted', target_id=returned, tool=tool, error=detail,
+                            channel=self.channel, response_digest=fingerprint(detail))
             if operation == 'spawn' and capacity_error(detail):
                 return dict(status='capacity', code='agent_capacity_exceeded', tool=tool, error=detail,
                             reason=detail.get('message'), response_digest=fingerprint(detail))
             raise
         # Only structural host facts are retained; never persist session text.
+        returned = raw.get('threadId',raw.get('thread',{}).get('id')) if self.channel == 'app_thread' else spawn_identity(raw)
         if raw.get('error'):
             error = raw['error']
             detail = error if isinstance(error, dict) else dict(message=str(error))
+            if operation == 'spawn' and returned:
+                return dict(status='accepted', target_id=returned, tool=tool, error=detail,
+                            channel=self.channel, response_digest=fingerprint(raw))
             capacity = operation == 'spawn' and capacity_error(detail)
             return dict(status='capacity' if capacity else 'failed',
                         code='agent_capacity_exceeded' if capacity else detail.get('code') or 'host_error',
                         error=detail, reason=detail.get('message') or detail.get('code') or 'host_error',
                         tool=tool, response_digest=fingerprint(raw))
-        returned = raw.get('threadId',raw.get('thread',{}).get('id')) if self.channel == 'app_thread' else raw.get('agent_id', raw.get('id'))
         if returned is not None and target is not None:
             require(returned == target, 'host returned a different execution identity')
         result = dict(status='accepted', target_id=returned or target, tool=tool,

@@ -49,7 +49,7 @@ class StandardDispatch:
                     'queued baseline state changed; recheck original request')
             value = state['runtime']['operations'].setdefault(identity, {})
             value.update(deepcopy(changes))
-            self.runtime._save(state, dict(op='standard-dispatch', request_id=identity))
+            self.runtime._save(state, dict(op='standard-dispatch', request_id=identity, task_id=value['task_id']))
             return deepcopy(value)
 
     def _evidence(self, identity, name, value):
@@ -269,6 +269,50 @@ class StandardDispatch:
                 self._record(request['request_id'], last_error=str(error), next_owner=self.integration_target)
             raise
 
+    def retry_capacity(self, request, *, authorized=False):
+        """One explicit same-request retry after a verified capacity refusal."""
+        if 'spec_check' in request: request = approved_request(request)
+        state = self.runtime._load()
+        self.runtime._actor(state, self.actor, control=True)
+        require(authorized is True and self.origin and self.origin.get('role')=='user' and
+            self.origin.get('conversation_id')==state['coordinator_id'] and
+            self.origin.get('reference')==request['approval'], 'current original retry authority required')
+        identity, task_id = request['request_id'], request['task_id']
+        old = state['runtime']['operations'][identity]
+        require(old.get('operation')=='standard-dispatch' and old.get('task_id')==task_id and
+            old['request_digest']==fingerprint(request), 'same original dispatch required')
+        approved_item(state, task_id)
+        require(load_bound(request['approval'])['integration_agent']==self.integration_target,
+                'original retry integration recipient required')
+        outcome = state['runtime']['operations'][identity+':launch']
+        if outcome.get('capacity_retries') and outcome['status'] in ('running','accepted_unconfirmed'):
+            return self._finish(request, old)
+        require(not old.get('retained_host_results') and not old.get('handoff_intent'),
+                'unreconciled host results or handoff block a capacity retry')
+        from capacity_recovery import check
+        check(self.runtime, state, identity+':launch', self.actor)
+        self._preflight(request, old)
+        clean = self.git.runner(['git', '-c', 'core.longpaths=true', '-C', request['worktree'],
+            'status', '--porcelain', '--untracked-files=all'], capture_output=True, timeout=20)
+        require(clean.returncode == 0 and not clean.stdout.strip(), 'original worktree is not clean')
+        resources, _ = self.bridge.controller.read()
+        permit = resources['capacity_requests'][outcome['request_id']]
+        admission = load_bound(outcome['admission'])
+        spec = load_bound(admission['resource_source'])
+        require(permit['status']=='granted' and permit['permit_id']==outcome['permit_id'] and
+            permit['spec']==spec and permit['spec_digest']==fingerprint(spec) and
+            all(admission.get(k)==spec.get(k) for k in spec) and
+            spec==dict(request_id=identity+':capacity', project_id=self.runtime.project_id,
+                task_id=task_id, attempt_id=identity+':launch', launch_identity='spawn:'+identity+':launch',
+                resource_class='agent_execution_slot'), 'original RESOURCE permit binding changed')
+        require(self.runtime._load()['revision']==state['revision'],
+                'dispatch state changed during capacity retry preflight')
+        route = state['runtime']['intake']['routes'][identity+':route']
+        self.runtime.launch(task_id, self.developer, attempt_id=identity+':launch',
+            admission=outcome['admission'], authorized=True, message=route['message'],
+            spawn=True, route_id=identity+':route', retry_capacity=True)
+        return self._finish(request, self.runtime._load()['runtime']['operations'][identity])
+
     def _run(self, request):
         with ExitStack() as locks:
             locks.enter_context(writer_lock(self.runtime.directory / 'standard-dispatch-driver'))
@@ -392,6 +436,36 @@ class StandardDispatch:
             return
         self.runtime.register_resource(request['task_id'], resource, request['approval'], self.actor)
 
+    def resume_prehost(self, request, observation, *, authorized=False):
+        """Explicit original-host continuation, never file-derived authorization."""
+        require(authorized is True, 'trusted terminal host sideband required')
+        if 'spec_check' in request:
+            request = approved_request(request)
+        identity = request['request_id']
+        state = self.runtime._load()
+        self.runtime._actor(state, self.actor, control=True)
+        old = state['runtime']['operations'][identity]
+        require(old.get('request_digest') == fingerprint(request), 'conflicting recovery request')
+        if old.get('status') == 'dispatched':
+            return self.status(identity)
+        from prehost_recovery import check
+        require(check(self.runtime, state, identity+':launch', observation, self.actor, self.bridge.evidence) == request,
+                'prehost observation differs from original request')
+        self._preflight(request, old)
+        source = load_bound(old['admission']['admission'])
+        resource, _ = self.bridge.controller.read()
+        permit = resource['capacity_requests'][identity+':capacity']
+        from .resources.support import fingerprint as resource_fingerprint
+        require(permit['status'] == 'granted' and permit['permit_id'] == source['permit_id'] and
+            permit['spec'] == load_bound(ref(self.bridge.evidence/('dispatch-'+fingerprint(identity)+'-capacity.json'))) and
+            permit['spec_digest'] == resource_fingerprint(permit['spec']),
+            'original RESOURCE admission no longer granted')
+        route = state['runtime']['intake']['routes'][identity+':route']
+        self.runtime.launch(request['task_id'], self.developer, attempt_id=identity+':launch',
+            admission=old['admission']['admission'], authorized=True, message=route['message'], spawn=True,
+            route_id=identity+':route', prehost_recovery=observation, dispatch_evidence_root=self.bridge.evidence)
+        return self._finish(request, self.runtime._load()['runtime']['operations'][identity])
+
     def _finish(self, request, old):
         identity, task_id = request['request_id'], request['task_id']
         if old.get('retained_host_results'):
@@ -479,16 +553,17 @@ class StandardDispatch:
             if stage == 'spawn':
                 require(packet['tool'] == 'multi_agent_v1__spawn_agent' and intent['canonical_tool'] == 'spawn_agent' and
                         packet['arguments'] == dict(message=route['message']), 'spawn result differs from original route')
-                from host_adapter import unwrap
+                from host_adapter import unwrap, spawn_identity
                 if response.get('error'):
-                    raw = {}
+                    raw = response['error'] if isinstance(response['error'], dict) else {}
                 elif isinstance(response.get('result'), dict) and response['result'].get('isError'):
                     rejected = response['result']
                     raw = dict(error=dict(message='\n'.join(b['text'] for b in rejected.get('content', [])
                         if b.get('type') == 'text'), raw=rejected))
                 else:
                     raw = unwrap(response['result'])
-                returned = raw.get('agent_id', raw.get('id')) if not raw.get('error') else None
+                returned = spawn_identity(raw.get('error') if isinstance(raw.get('error'), dict) and
+                    raw['error'].get('raw') else raw)
                 require(returned == actual and (actual is None or isinstance(actual, str) and actual.strip()),
                         'actual spawn identity differs from raw host result')
                 from host_adapter import capacity_error

@@ -307,6 +307,26 @@ def launch_guard(state, task_id, route_id, *, spawn, executor_id, message):
     return route
 
 
+def feedback_tasks(state, command):
+    """Derive affected tasks from the validated routing decision, never caller scope."""
+    data, op = intake(state), command['op']
+    if op == 'spec':
+        return [key for key, task in state['tasks'].items()
+                if task.get('routing', {}).get('requirement_id') == command['requirement_id']]
+    if op == 'present':
+        return [item['task_id'] for item in data['plans'][command['plan_id']]['items']]
+    if op == 'approve':
+        return load_bound(command['reference'])['task_ids']
+    if op == 'instruction':
+        return data['instructions'][command['instruction_id']]['candidates']
+    if op == 'apply-instruction':
+        return [data['instructions'][command['instruction_id']]['task_id']]
+    if op in ('dependency', 'verify-dependency'):
+        item = data['dependencies'][command['dependency_id']]
+        return [item['source_task'], item['target_task']]
+    return [command['task_id']]
+
+
 def apply(state, command, actor, user_origin=None):
     """A finite ledger mutation; Runtime persists successes and rejected instructions."""
     data = intake(state)

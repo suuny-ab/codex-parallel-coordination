@@ -63,6 +63,36 @@ console.log(JSON.stringify({error, packet}));
         self.assertEqual(data['packet']['result']['record']['admission']['status'], 'granted')
         self.assertEqual(self.host.fixture.dispatch.run(self.host.fixture.request)['status'], 'capacity')
 
+    def test_error_argument_with_actual_identity_continues_observation(self):
+        data = self.probe("""
+const error = {agent_id:'synthetic-error-agent', code:'agent_capacity_exceeded', message:'agent thread limit reached'};
+let packet = await session.reply(pending.tool, null, error);
+while (packet.kind === 'host_call') {
+  packet = await session.reply(packet.tool, packet.tool === 'multi_agent_v1__wait_agent' ?
+    {status:{'synthetic-error-agent':'running'}} : {submission_id:'fixture'});
+}
+await session.exited;
+console.log(JSON.stringify({packet,calls:session.calls,spawnedId:session.spawnedId}));
+""")
+        self.assertEqual(data['packet']['result']['status'], 'dispatched')
+        self.assertEqual(data['spawnedId'], 'synthetic-error-agent')
+        self.assertEqual(data['calls'], 3)
+
+    def test_late_error_argument_with_actual_identity_retains_author(self):
+        data = self.probe("""
+session.child.stdin.end();
+await session.next();
+await session.exited;
+const error = {agent_id:'synthetic-error-agent', code:'agent_capacity_exceeded', message:'agent thread limit reached'};
+const late = await session.reply(pending.tool, null, error);
+const verified = await session.verifyHostResult(config.requestMeta);
+console.log(JSON.stringify({late,verified,spawnedId:session.spawnedId,calls:session.calls}));
+""")
+        self.assertEqual(data['late']['result']['actual_agent_id'], 'synthetic-error-agent')
+        self.assertEqual(data['spawnedId'], 'synthetic-error-agent')
+        self.assertEqual(data['verified']['result']['owner_agent_id'], 'native_agent:synthetic-error-agent')
+        self.assertEqual(data['calls'], 1)
+
     def test_other_exception_keeps_original_detail_and_unknown_without_retry(self):
         data = self.probe("""
 const error = host.serializeHostError(Object.assign(new Error('fixture response lost'), {code:'ETIMEDOUT'}));

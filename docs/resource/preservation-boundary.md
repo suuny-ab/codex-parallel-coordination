@@ -1,5 +1,9 @@
 # 冻结捕获与必要依赖
 
+遗漏捕获项可在正式归档和关闭意图之前受控追加：新声明带 `previous`（原声明的路径及SHA）与补正原因，调用 `classify_preservation(..., authorized=True, previous_declaration=原声明ref)`。旧清单、原字节、既有每项分类和失败记录均保留，禁止删改旧分类或把必要凭据降为捕获。每次读取重新核验整条声明链；重复提交也重验原件。已正式归档或进入关闭阶段后拒绝追加。
+
+原带marker的归档失败可在追加分类后沿原操作继续，保留原marker和partial字节，另存不可变修订意图。没有marker的旧失败目录保留原状，使用新的明确归档目录，不冒充已知原操作。
+
 `Runtime.classify_preservation(task_id, declaration_ref, actor_id, authorized=True)` 登记技术分类。它复用账本内该任务的 `resource_authority` 原批准 SHA、原需求关联和集成者角色，调用者须为原主会话或获批集成者，且不是作者。原授权须包含任务成果保全回收或 `bounded_new_task_resource_cleanup`；声明里的角色、用户引文和标签不授予权限。声明和原批准必须留在受管资源之外。
 
 原批准解析器统一承接现行直接用户消息及明确异步用户批准两种精确来源，分类、质量承接与后续交付门禁使用相同身份校验，仍核原文件 SHA、主会话、原需求路径、任务/树/分支和独立角色。未知来源仍拒绝；`SOURCE` 规范常量、技术/合入指令契约及 bounded cleanup 权限保持不变，不改写旧批准。
