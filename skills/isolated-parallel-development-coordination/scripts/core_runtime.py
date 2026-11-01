@@ -476,10 +476,27 @@ class Runtime:
             closed=next(o for o in self._load()['runtime']['operations'].values() if o.get('operation')=='close' and
                 o.get('task_id')==task_id and o.get('executor_id')==task['owner_agent_id'] and
                 o.get('generation')==executor['generation'] and o.get('status')=='closed')
-        receipt=self.release_receipt(closed['operation_id'],adapter.actor_id)
+        confirmation=closed.get('close_confirmation')
+        if confirmation and not (closed.get('request_id') and closed.get('permit_id')):
+            require(self.verify_close_confirmation(confirmation)['verified'],'canonical native confirmation is stale')
+            receipt=None
+        else:receipt=self.release_receipt(closed['operation_id'],adapter.actor_id)
         result=self.cleanup_task(task_id,operation_id+':files',preservation_ref,invoke,adapter.actor_id,
                                  authorized=True,scope=adapter.scope)
-        return dict(result,release_receipt=receipt)
+        return dict(result,release_receipt=receipt,**(dict(close_confirmation=confirmation,plugin_quota='not_reserved')
+            if receipt is None else {}))
+
+    def prepare_native_close(self,task_id,operation_id,preservation_ref,actor_id,**options):
+        from native_control import prepare
+        return prepare(self,task_id,operation_id,preservation_ref,actor_id,**options)
+
+    def claim_native_close(self,operation_id,actor_id,**options):
+        from native_control import claim
+        return claim(self,operation_id,actor_id,**options)
+
+    def verify_close_confirmation(self,reference):
+        from native_control import verify
+        return verify(self,reference)
 
     def register_resource(self,task_id,resource,authority_ref,actor_id):
         from cleanup import register
@@ -617,7 +634,7 @@ class Runtime:
                 artifact(executor['authority'])
                 from cleanup import eligibility
                 from task_completion import completion_flags
-                eligibility(self,state,operation['task_id'],operation['preservation'],operation['proof_scope'])
+                eligibility(self,state,operation['task_id'],operation['preservation'],operation['proof_scope'],resource_paths=False)
                 return dict(completion_flags(state,operation['task_id']),verified=True,preservation_valid=True,no_active_work=True,
                     no_active_descendants=True,no_release_dependencies=True,exclusive_task_resource=True,
                     cleanup_authorized=operation.get('cleanup_authorized') is True,protected=False)
@@ -632,14 +649,33 @@ class Runtime:
             record=state['runtime']['operations'][operation_id]
             self._resource_actor(state,actor_id,record['task_id']);self._scope(state,record['task_id'])
             executor=state['runtime']['executors'][record['executor_id']]
+            if record.get('native_request') and record['status']=='closed':
+                from native_control import confirm
+                require(record.get('host_confirmation')==observation_ref,'different duplicate native confirmation')
+                require(confirm(self,state,record,facts,observation_ref)['confirmed'],'native confirmation changed')
+                return deepcopy(record)
             require(record['operation']=='close' and record['status'] in ('intent','unknown') and
                     executor['generation']==record['generation'],'not a current uncertain close')
-            require(facts.get('operation_id')==operation_id and facts.get('executor_id')==executor['id'] and
-                    facts.get('generation')==executor['generation'] and facts.get('closed') is True and facts.get('evidence'),
-                    'actual close confirmation required; idle/completed is insufficient')
-            for item in facts['evidence']:artifact(item)
+            if record.get('native_request'):
+                from native_control import confirm
+                result=confirm(self,state,record,facts,observation_ref)
+                if not result['confirmed']:
+                    record.setdefault('host_observations',[]).append(observation_ref)
+                    record.update(status='unknown',reason=result['reason'],next_technical_owner=actor_id,
+                                  next_action='inspect_original_close_result_without_reissuing')
+                    self._save(state,dict(op='native-close-unconfirmed',operation_id=operation_id))
+                    return deepcopy(record)
+                record['host_confirmation']=observation_ref
+            else:
+                require(facts.get('operation_id')==operation_id and facts.get('executor_id')==executor['id'] and
+                        facts.get('generation')==executor['generation'] and facts.get('closed') is True and facts.get('evidence'),
+                        'actual close confirmation required; idle/completed is insufficient')
+                for item in facts['evidence']:artifact(item)
             record.setdefault('observations',[]).append(observation_ref);record['status']='closed'
             executor.update(lease='closed',execution='unknown')
+            if record.get('native_request'):
+                from native_control import receipt
+                record['close_confirmation']=receipt(self,state,record)
             task=state['tasks'][record['task_id']]
             if task['phase']=='cancelled' and task.get('worker_run'):task['worker_run']['status']='cancelled'
             self._save(state,dict(op='reconcile-close',operation_id=operation_id));return deepcopy(record)

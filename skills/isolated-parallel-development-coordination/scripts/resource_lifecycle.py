@@ -59,7 +59,7 @@ def agent(state, task_id, authority):
         resources[key] = value
 
 
-def inventory(state, task_id, *, author=True):
+def inventory(state, task_id, *, author=True, require_paths=True):
     """Strict only for new managed tasks; never retrofits historical resources."""
     task = state['tasks'][task_id]
     if not task.get('resource_contract'):
@@ -69,7 +69,7 @@ def inventory(state, task_id, *, author=True):
     require(tree.get('task_id') == task_id and tree.get('kind') == 'worktree' and
             tree.get('path_identity') and Path(tree['path']).resolve() == Path(task['worktree']).resolve(),
             'actual worktree must be registered before managed execution/cleanup')
-    if tree.get('cleanup_status') != 'cleaned':
+    if require_paths and tree.get('cleanup_status') != 'cleaned':
         require(io_path(tree['path']).exists(), 'registered worktree disappeared before confirmed cleanup')
         info = io_path(tree['path']).stat()
         require([info.st_dev,info.st_ino] == tree['path_identity'], 'registered worktree now identifies another object')
@@ -133,7 +133,31 @@ def preserved_binding(task):
         'requirements','resource_authority')}
 
 
-def preserve(runtime, task_id, destination, handoff, actor, *, merge_verification=None, scope='host_verified', extra=()):
+def remote_binding(state, task_id, source, reference, scope):
+    from urllib.parse import urlsplit
+    task=state['tasks'][task_id];remote=load_bound(reference)
+    require(remote.get('schema')=='remote-main-completion/1' and remote.get('scope')==scope and
+        remote.get('project_id')==state['project']['id'] and remote.get('task_id')==task_id and
+        remote.get('delivery_revision')==task['delivery_revision'] and remote.get('report')==task['delivery'] and
+        remote.get('source_digest')==source['digest'] and remote.get('source_head')==task['merge']['head_sha'] and
+        remote.get('main_ref')=='refs/heads/'+state['project']['main_branch'] and remote.get('main_sha') and
+        remote.get('pr_url')==task['mr']['url'] and remote.get('contains_source') is True and remote.get('author_clean') is True and
+        remote.get('remote_identity'), 'current cloud PR/main/source binding required')
+    commands=remote.get('commands')
+    require(isinstance(commands,list) and len(commands)==2 and all(row.get('exit_code')==0 for row in commands) and
+        commands[0].get('arguments')==['ls-remote','--exit-code','origin',remote['main_ref']] and
+        commands[0].get('stdout','').split()==[remote['main_sha'],remote['main_ref']] and
+        commands[1].get('arguments')==['merge-base',remote['source_head'],remote['main_sha']] and
+        commands[1].get('stdout')==remote['source_head'],'actual remote ref and ancestry observations required')
+    require(scope=='fixture_only' or remote['remote_identity']!='explicit-local-remote-fixture','fixture is not cloud verification')
+    parsed=urlsplit(task['mr']['url'].split('/pull/')[0].split('/-/merge_requests/')[0])
+    expected=(parsed.hostname+'/'+parsed.path.strip('/').removesuffix('.git')).casefold()
+    require(remote['remote_identity']==expected or
+        scope=='fixture_only' and remote['remote_identity']=='explicit-local-remote-fixture','remote repository differs from approved PR')
+
+
+def preserve(runtime, task_id, destination, handoff, actor, *, merge_verification=None, scope='host_verified', extra=(),
+             remote_verification=None):
     """Copy the exact artifact graph; do not rewrite reports or manufacture review."""
     from cleanup import canonical_path, eligibility
     artifact(handoff)
@@ -143,6 +167,8 @@ def preserve(runtime, task_id, destination, handoff, actor, *, merge_verificatio
         require(task['phase'] == 'completed' and task.get('merge', {}).get('verified'), 'verified main completion required')
         inventory(state, task_id)
         report = report_for(state, task_id)
+        require(scope=='fixture_only' or remote_verification, 'actual cloud main verification required before reclamation preservation')
+        if remote_verification:remote_binding(state,task_id,report['source'],remote_verification,scope)
         require(Path(destination).is_absolute(), 'absolute preservation directory required')
         destination = canonical_path(destination)
         require(not io_path(destination).exists(), 'new absolute preservation directory required')
@@ -174,7 +200,7 @@ def preserve(runtime, task_id, destination, handoff, actor, *, merge_verificatio
                     for nested in value.values(): copy(nested)
             elif isinstance(value, list):
                 for nested in value: copy(nested)
-        copy(preserved_binding(task)); copy(handoff); copy(list(extra))
+        copy(preserved_binding(task)); copy(handoff); copy(list(extra));copy(remote_verification)
         copy(state['runtime']['executors'][task['owner_agent_id']])
         for resource in state['runtime'].get('resources', {}).values():
             if resource.get('task_id') == task_id: copy(resource)
@@ -184,8 +210,9 @@ def preserve(runtime, task_id, destination, handoff, actor, *, merge_verificatio
         manifest = dict(executor_id=task['owner_agent_id'], generation=state['runtime']['executors'][task['owner_agent_id']]['generation'],
             files=files, merge_verification=proof, handoff=handoff, unregistered_evidence_preserved=True,
             project_id=runtime.project_id, task_id=task_id, binding=preserved_binding(task), source=report['source'], scope=scope)
+        if remote_verification:manifest['remote_verification']=remote_verification
         path = destination/'preservation.json'; write_atomic(path, manifest); reference = ref(path)
-        eligibility(runtime, state, task_id, reference, scope)
         task['preservation'] = reference
+        eligibility(runtime, state, task_id, reference, scope)
         runtime._save(state, dict(op='preserve-task', task_id=task_id, preservation=reference))
         return reference

@@ -130,7 +130,16 @@ class ResourceClosedLoop(core_tests.CoreFixture):
     def test_task_scoped_cleanup_without_global_delegation_keeps_global_roles_unchanged(self):
         self.normal_cycle(scoped=True)
 
-    def normal_cycle(self, scoped=False):
+    def test_native_root_handoff_preserves_real_local_permit_release(self):
+        self.normal_cycle(scoped=True,native=True)
+
+    def test_remote_bound_completion_does_not_depend_on_reused_old_source_path(self):
+        self.normal_cycle(scoped=True,native=True,durable=True)
+
+    def test_directory_failure_does_not_retain_completed_handed_off_native_agent(self):
+        self.normal_cycle(scoped=True,native=True,durable=True,directory_failure=True)
+
+    def normal_cycle(self, scoped=False, native=False, durable=False, directory_failure=False):
         repo = self.repository()
         authority = self.json('approved-task.json',dict(schema='approved-dispatch-plan/1',approval='approved',
             source='direct user message in original main conversation',main_conversation=self.actor,
@@ -201,6 +210,17 @@ class ResourceClosedLoop(core_tests.CoreFixture):
             based_on_revision=self.runtime._load()['revision'],source_head=head,previous_main=base,main_ref='main',
             main_head=head,contains_source=True,scope='fixture_only',evidence=[self.file('main-observation.txt')]))
         self.runtime.record_main_inclusion(proof,'delivery-worker')
+        remote=None
+        if durable:
+            bare=self.root/'cloud-fixture.git'
+            subprocess.run(['git','-c','core.longpaths=true','init','--bare',str(bare)],check=True,capture_output=True)
+            subprocess.run(['git','-c','core.longpaths=true','-C',str(repo),'remote','add','origin',str(bare)],check=True,capture_output=True)
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.bridge.observe_remote_completion('A','delivery-worker',scope='fixture_only')
+            subprocess.run(['git','-c','core.longpaths=true','-C',str(repo),'push','origin','main'],check=True,capture_output=True)
+            with self.assertRaises(ValueError):
+                self.bridge.observe_remote_completion('A','delivery-worker',scope='host_verified')
+            remote=self.bridge.observe_remote_completion('A','delivery-worker',scope='fixture_only')
         if scoped:
             self.runtime.apply(dict(op='revoke-delivery',user_reference='End fixture global delegation',
                 evidence=self.file('revoke.txt')),self.actor)
@@ -215,14 +235,36 @@ class ResourceClosedLoop(core_tests.CoreFixture):
         self.runtime.observe_executor('worker-A',facts,'delivery-worker',self.json('post-merge-observation.json',facts),
             task_id='A' if scoped else None)
         preservation = self.runtime.preserve_task('A',self.root/'external-preservation',self.file('handoff.txt'),
-            'delivery-worker',scope='fixture_only')
+            'delivery-worker',scope='fixture_only',remote_verification=remote)
+        if directory_failure:
+            (tree/'disposable-test-output.txt').write_text('Untracked temporary output; directory remains protected',encoding='utf-8')
+            self.assertEqual(report_for(self.runtime._load(),'A')['source'],report['source'])
+        if native:
+            intent=self.runtime.prepare_native_close('A','native-close',preservation,'delivery-worker',
+                authorized=True,scope='fixture_only')
+            claimed=self.runtime.claim_native_close('native-close',self.actor,authorized=True)
+            self.assertTrue(claimed['dispatch_allowed'])
+            raw_close=self.json('formal-close.json',dict(previous_status={'completed':'fixture final'}))
+            raw_wait=self.json('formal-wait.json',dict(status={'native-A':'not_found'},timed_out=False))
+            observation=self.json('formal-native-result.json',dict(operation_id='native-close',executor_id='worker-A',generation=1,
+                request=intent['native_request'],controller_id=self.actor,
+                close=dict(tool='multi_agent_v1__close_agent',arguments={'target':'native-A'},result=raw_close),
+                wait=dict(tool='multi_agent_v1__wait_agent',arguments={'targets':['native-A'],'timeout_ms':10000},result=raw_wait)))
+            self.runtime.reconcile_lifecycle('native-close',observation,'delivery-worker')
         adapter,_ = self.adapter({'close_agent':{'closed':True}});adapter.actor_id='delivery-worker'
         result = self.runtime.reclaim_development('A','reclaim',preservation,adapter,self.bridge.cleanup,authorized=True)
+        if directory_failure:
+            self.assertEqual(result['status'],'pending_cleanup');self.assertTrue(tree.exists())
+            self.assertEqual(self.runtime._load()['runtime']['executors']['worker-A']['lease'],'closed')
+            self.assertEqual(self.runtime._load()['tasks']['A']['phase'],'completed')
+            self.assertEqual(report_for(self.runtime._load(),'A')['source'],report['source'])
+            self.assertTrue(self.bridge.release_agent_quota('native-close','delivery-worker')['released'])
+            return
         self.assertEqual(result['status'],'cleanup_completed');self.assertFalse(tree.exists())
         self.assertFalse(environment.exists()); self.assertFalse(Path(delivery['path']).exists())
         self.assertEqual(report_for(self.runtime._load(),'A')['source'],report['source'])
         self.assertEqual(self.runtime._load()['tasks']['A']['merge']['head_sha'],head)
-        self.assertTrue(self.bridge.release_agent_quota('reclaim:agent','delivery-worker')['released'])
+        self.assertTrue(self.bridge.release_agent_quota('native-close' if native else 'reclaim:agent','delivery-worker')['released'])
         again = self.runtime.reclaim_development('A','again',preservation,adapter,
             lambda _:self.fail('confirmed resource removed twice'),authorized=True)
         self.assertEqual(again['status'],'cleanup_completed')
@@ -237,7 +279,10 @@ class ResourceClosedLoop(core_tests.CoreFixture):
         backup.write_bytes(saved)
         # A replacement source is checked as a live source; it cannot inherit old completion.
         tree.mkdir(); (tree/'wrong.txt').write_text('new unrelated object',encoding='utf-8')
-        with self.assertRaises(ValueError): report_for(self.runtime._load(),'A')
+        if durable:
+            self.assertEqual(report_for(self.runtime._load(),'A')['source'],report['source'])
+        else:
+            with self.assertRaises(ValueError): report_for(self.runtime._load(),'A')
 
     def test_task_resource_authority_rejects_author_other_task_and_changed_approval(self):
         self.repository()

@@ -30,7 +30,8 @@ prepare_development 是正常受管入口。原 Runtime.prepare 仍可用于基�
 ```python
 preservation = runtime.preserve_task(
     task_id, new_absolute_external_directory, handoff_ref, delivery_actor,
-    scope="host_verified", extra=[necessary_untracked_artifact_ref],
+    scope="host_verified", extra=[necessary_non_git_artifact_ref],
+    remote_verification=bridge.observe_remote_completion(task_id, delivery_actor),
 )
 result = runtime.reclaim_development(
     task_id, cleanup_operation_id, preservation, actual_host_adapter,
@@ -39,8 +40,18 @@ result = runtime.reclaim_development(
 # 正式 close 经 CORE 确认后才由 bridge.release_agent_quota 释放本插件许可。
 ```
 
-保全入口在同一账本绑定当前 task/revision、source、交付、独审、集成、PR 和 main 事实；递归复制这些材料引用的准确字节及必要交接，外部副本不改写原报告。宿主显式提供 extra 并确认其必要材料完整，不能据复制文件推断业务知识无损。清单及副本不在任何将被回收的资源中。
+保全入口在同一账本绑定当前 task/revision、source、交付、独审、集成、PR 和 main 事实；递归保全必要交付材料引用的准确字节及交接，外部副本不改写原报告。宿主显式提供有价值且不能从 Git 恢复的 extra，确认必要材料完整；不把所有临时产物永久保存，也不据复制文件推断业务知识无损。清单及副本不在任何将被回收的资源中。
 
-report_for 在真实文件仍存在时继续检查原字节/源清单。仅当同任务专属工作树经原清理入口确认删除，且外部保全仍绑定当前完成事实时，读取已保全的源清单；缺失证据也必须位于已确认清理的原路径且有同 SHA256 的外部副本。无记录删除、源目录替换、原文件改字节、外部副本损坏、任务绑定变化一律不降级放行。需要读取原始引用的审阅代码可以在 evidence.preserved_read(state, task_id) 内继续使用 artifact/load_bound；此上下文只在当前调用有效，不改变报告路径或全局账本。
+开发和审核期间，report_for 继续检查实际源清单与测试绑定。正常完成后，先由 observe_remote_completion 实际读取批准仓库 origin 的 main，并核本地已知提交图确实包含已测 head、对应 PR 身份及作者树无未提交成果；对象尚未同步、远端未包含、仓库不匹配或作者树脏都拒绝。不自动 fetch/push，不从本地 merge 推定云端完成，file remote 仅允许明确 fixture。
+
+带该远端核验的 canonical preserve_task 只保存必要交付/测试/审核/非 Git 材料和源清单，Git 可恢复的正式代码不逐任务全量备份。其后 report_for 使用已核云端提交与同字节持久化材料，原工作树不存在、目录待清理或原路径被新目录复用都不撤销已完成事实；它们也不授予删除新对象的权限。保全损坏、当前交付/审核/main/授权绑定变化仍拒绝。读取原引用可用 evidence.preserved_read 的有限上下文。
+
+native 关闭与目录清理分开：按[ROOT 原生关闭控制接线](../../skills/isolated-parallel-development-coordination/references/native-control.md)保存 intent、ROOT 一次领取并正式调用、集成者 reconcile。交接和安全关口完成后，目录清理失败仍保留 pending_cleanup，不能拖住无活动工作的原生作者。无本地 permit 不补造许可，平台容量数仍未知。
+
+## 受信 RESOURCE profile
+
+RESOURCE 实例必须由受信项目入口显式引用，不能按消息猜路径、私建准入状态或将旧 actor 补记成已获许可。当前正式接线字段为 explicit-resource-instance-profile/1：state（绝对路径）、policy/authority（path+sha256）、project_id、cleanup_root、external_evidence_root；profile 自身由受信 CURRENT_ENTRY 引用。它只标识现有实例，不是第二份任务队列。
+
+宿主先核该 profile hash、项目和 CORE cleanup_root，再用 Controller(profile["state"]).read() 核现有 state.policy 与 profile.policy、policy.authority 与 profile.authority 一致。之后构造 ArtifactCleanup 与 ResourceBridge(runtime, controller, artifacts, external_evidence_root)。未声明或不一致时停止准入，交集成者完成必要受信配置；不以 fixture 生产身份替代，也不从空实例推定旧 actor 已准入。
 
 真实宿主 native spawn/close、模型容量、进程树退出和目录空间分别核证。单元用例的 host/PR/CI 事实明确为 fixture；实际 Git、Windows Job 与临时文件操作也只代表所列隔离资源。当前开发者不能关闭自己来证明产品验收；本任务真实作者回收留给合入、保全核验后的集成步骤。

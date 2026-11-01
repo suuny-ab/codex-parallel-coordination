@@ -47,12 +47,12 @@ def register(runtime, task_id, resource, authority_ref, actor_id):
         return deepcopy(value)
 
 
-def eligibility(runtime,state,task_id,preservation_ref,scope,*,require_pr_closed=True):
+def eligibility(runtime,state,task_id,preservation_ref,scope,*,require_pr_closed=True,closing_operation=None,resource_paths=True):
     task=state['tasks'][task_id]
     cancelled=task['phase']=='cancelled'
     from resource_lifecycle import inventory
     if not cancelled or task.get('resource_contract')=='new-task/1':
-        inventory(state,task_id)
+        inventory(state,task_id,require_paths=resource_paths)
     if cancelled:
         from development_lifecycle import cancelled as verify_cancelled
         record=verify_cancelled(state,task_id,scope)
@@ -63,6 +63,11 @@ def eligibility(runtime,state,task_id,preservation_ref,scope,*,require_pr_closed
     else:require(task['phase']=='completed' and task.get('merge',{}).get('verified'),'task must be merged into target main and verified before reclamation')
     require(not task.get('publication_dependencies'),'release dependency still uses development resources')
     inventory=load_bound(preservation_ref)
+    if inventory.get('remote_verification'):
+        from resource_lifecycle import remote_binding, preserved_binding
+        require(task.get('preservation')==preservation_ref and inventory.get('binding')==preserved_binding(task),
+                'canonical cloud-bound preservation required')
+        remote_binding(state,task_id,inventory['source'],inventory['remote_verification'],scope)
     executor=state['runtime']['executors'].get(task['owner_agent_id'])
     require(executor and inventory.get('executor_id')==executor['id'] and inventory.get('generation')==executor['generation'],
             'preservation executor/generation changed')
@@ -97,11 +102,16 @@ def eligibility(runtime,state,task_id,preservation_ref,scope,*,require_pr_closed
         external(item)
         if item.get('original'):
             original=Path(item['original']['path'])
-            if io_path(original).exists():artifact(item['original'])
+            durable=(inventory.get('remote_verification') and task.get('preservation')==preservation_ref and
+                any(r.get('task_id')==task_id and r.get('path') and
+                    canonical_path(original).is_relative_to(canonical_path(r['path']))
+                    for r in state['runtime'].get('resources',{}).values()))
+            if io_path(original).exists() and not durable:artifact(item['original'])
+            elif durable:pass
             else:
                 cleaned=[r for r in state['runtime'].get('resources',{}).values() if r.get('path') and
                     canonical_path(original).is_relative_to(canonical_path(r['path'])) and r['cleanup_status']=='cleaned']
-                require(cleaned,'original evidence disappeared outside confirmed cleanup')
+                require(cleaned or durable,'original evidence disappeared outside confirmed cleanup/preserved cloud completion')
                 for resource in cleaned:artifact(resource['cleanup_result']['evidence'])
             require(item['sha256']==item['original']['sha256'],'external copy bytes differ')
     external(inventory['handoff'])
@@ -120,7 +130,11 @@ def eligibility(runtime,state,task_id,preservation_ref,scope,*,require_pr_closed
     require(executor and (executor['execution'] in ('idle','completed') or executor['lease']=='closed') and executor.get('active_children')==[] and
             executor.get('pending_work') is False,'active or unverified executor/descendants')
     require(not executor.get('shared') and not executor.get('protected'),'shared/protected executor remains in use')
-    require(executor['lease'] in ('open','closed'),'uncertain close/resume must be reconciled before new cleanup')
+    pending=state['runtime']['operations'].get(closing_operation,{}) if closing_operation else {}
+    native_closing=(executor['lease']=='closing' and pending.get('operation')=='close' and
+        pending.get('native_request') and pending.get('task_id')==task_id and pending.get('executor_id')==executor['id'] and
+        pending.get('generation')==executor['generation'] and pending.get('status') in ('intent','unknown'))
+    require(executor['lease'] in ('open','closed') or native_closing,'uncertain close/resume must be reconciled before new cleanup')
     if executor['lease']=='closed':
         require(any(operation.get('operation')=='close' and operation.get('status')=='closed' and
             operation.get('task_id')==task_id and operation.get('executor_id')==executor['id'] and
@@ -186,12 +200,16 @@ def run(runtime,task_id,operation_id,preservation_ref,invoke,actor_id,*,authoriz
                     executor=state['runtime']['executors'][resource['executor_id']]
                     confirmed=[o for o in operations.values() if o.get('operation')=='close' and
                         o.get('executor_id')==resource['executor_id'] and o.get('generation')==resource['generation'] and
-                        o.get('task_id')==task_id and o.get('status')=='closed' and o.get('release_receipt')]
+                        o.get('task_id')==task_id and o.get('status')=='closed' and
+                        (o.get('release_receipt') or o.get('close_confirmation'))]
                     require(executor['generation']==resource['generation'] and executor['lease']=='closed' and confirmed,
                             'close via canonical current lifecycle entry before resource aggregation')
-                    result=dict(status='cleaned',already_confirmed=True,evidence=confirmed[-1]['release_receipt'])
+                    close=confirmed[-1]
+                    result=dict(status='cleaned',already_confirmed=True,evidence=close.get('release_receipt') or close['close_confirmation'])
                     artifact(result['evidence'])
-                    require(runtime.verify_release_receipt(load_bound(result['evidence']),result['evidence'])['verified'],
+                    valid=(runtime.verify_release_receipt(load_bound(result['evidence']),result['evidence']) if close.get('release_receipt')
+                           else runtime.verify_close_confirmation(result['evidence']))
+                    require(valid['verified'],
                             'canonical release is stale')
                     resource.update(cleanup_status='cleaned',cleanup_result=deepcopy(result))
                     record['results'][rid]=result

@@ -106,6 +106,22 @@ class ResourceBridge:
             return dict(attempt_id=operation_id)
         return create(self.runtime, task_id, operation_id, resource, authority, actor_id, invoke, authorized=authorized)
 
+    def observe_remote_completion(self, task_id, actor_id, *, scope="host_verified"):
+        """Finite actual remote read at the normal pre-reclamation boundary."""
+        from .worktrees import GitWorktrees
+        from evidence import report_for, require
+        state=self.runtime._load();self.runtime._resource_actor(state,actor_id,task_id);self.runtime._scope(state,task_id)
+        task=state["tasks"][task_id]
+        require(task["phase"]=="completed" and task.get("merge",{}).get("verified"),"verified task completion required")
+        report=report_for(state,task_id)
+        adapter=GitWorktrees(self.runtime.project_root,state["runtime"]["cleanup_root"])
+        record=dict(resource_id=task_id+":worktree",path=task["worktree"],
+            metadata=dict(repository_root=str(self.runtime.project_root),expected_head=task["merge"]["head_sha"]))
+        value=adapter.remote_completion(record,state["project"]["main_branch"],task["mr"]["url"],scope=scope)
+        value.update(project_id=self.runtime.project_id,task_id=task_id,delivery_revision=task["delivery_revision"],
+                     report=task["delivery"],source_digest=report["source"]["digest"])
+        return self._record(value)
+
     def cleanup(self, resource):
         """Pass as Runtime.cleanup_task's trusted callback, never as JSON authority."""
         self._external(resource)

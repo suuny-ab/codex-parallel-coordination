@@ -116,6 +116,10 @@ RESOURCE 文件联接示例：invoke 收到的 resource 已含 CORE 生成的 cl
 
 ## 新任务资源入口
 
+真实 ROOT close/wait 的最小分工见[原生关闭控制接线](native-control.md)：集成者 prepare_native_close，真正 ROOT claim_native_close 后各执行一次正式工具，集成者用原 reconcile_lifecycle 消费结果。只有事前已登记且已合入/保全的正常任务可用，不为旧空 resources 任务补造成功。
+
+正常 host_verified 的 preserve_task 还必须绑定实际远端 main 包含已测提交的 remote_verification；ResourceBridge.observe_remote_completion 提供有限真实 Git 读观察。开发审核仍核实际源清单；完成后的云端/PR/提交与必要外部材料承担回溯，不要求临时作者路径长期存在，不全量备份 Git 代码。真实 RESOURCE profile 的明确字段及实例核对见插件 docs/resource/closed-loop.md。
+
 未设置全局 delivery 时，资源操作仅可复用本任务原批准。正常 prepare_development 的 authority_ref 冻结 approved-dispatch-plan/1；已观察派发继续引用其现有 proof.approval。每次重验原 main、独立 integration_agent、task/worktree/branch 及 bounded_new_task_resource_cleanup 范围。只允许该任务的资源创建、observe_executor(..., task_id=...)、保全及清理/确认/许可回执；不修改 _actor，不得到普通任务写权、其它任务或 resume 权限，不为无 CI 项目编造 required_ci_jobs。当前调用者身份仍须由真实宿主提供。
 
 完整插件宿主以同一 Runtime/Controller/ArtifactCleanup 构造 ResourceBridge，先 `prepare_development(spec, main_actor)`，再 `create_worktree(task_id, operation_id, authority_ref, actor, authorized=True)`。spec.worktree 必须是 CORE cleanup_root 内的未创建专属目录，且 RESOURCE cleanup_roots 同样允许。任一范围或能力不匹配在 Git 前拒绝；同操作未知不重发。只有实际创建和两组件登记成功为 registered，才走原批准路由、RESOURCE 准入和 launch。取得实际执行者时同事务登记 task:agent、generation 和归属。基础 prepare 不提供创建能力，返回 managed_closed_loop=false，登记缺口不能成为 cleanup_completed。
