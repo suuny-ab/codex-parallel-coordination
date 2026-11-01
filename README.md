@@ -11,6 +11,7 @@
 | 了解主会话、开发者、集成者的分工 | [共同规则](skills/isolated-parallel-development-coordination/references/current-rules.md) |
 | 构建、验证或管理隔离文件副本 | [本地验证与打包](docs/validation.md) |
 | 调用账本或资源接口 | [CORE 运行契约](skills/isolated-parallel-development-coordination/references/core-runtime.md)、[RESOURCE API](docs/resource/API.md)，按动作查阅 |
+| 正常新任务的创建登记、外部保全和回收 | [新任务资源闭环](docs/resource/closed-loop.md)；原生关闭按该动作的 ROOT 控制接线执行 |
 | 追查旧版本、撤回策略或失败轨迹 | [历史索引](skills/isolated-parallel-development-coordination/references/history/index.md)，按需读取 |
 
 `work-cycle` 返回同 revision 的至多一项用户事项、下一责任及开发/交付/清理摘要；无新观察只报最后登记，完成但待清理不表示所有工作结束。它复用原收件/closeout/progress，不自动执行、清理或轮询。

@@ -1,5 +1,7 @@
 """Source inventories and worker-owned immutable report construction (stdlib only)."""
 import copy
+from contextlib import contextmanager
+from contextvars import ContextVar
 import hashlib
 import json
 import os
@@ -7,9 +9,59 @@ from pathlib import Path
 import subprocess
 from urllib.parse import urlparse
 
-from coordination_v1 import artifact, digest, load, require, write_atomic, io_path
+from coordination_v1 import artifact as original_artifact, digest, load, require, write_atomic, io_path
 
 ERRORS = (ValueError, KeyError, TypeError, AttributeError, OSError)
+_preserved = ContextVar('confirmed_cleanup_evidence', default=None)
+
+
+def artifact(value):
+    # Active sources remain live; cloud-bound completed tasks use durable task material.
+    preserved=_preserved.get()
+    if preserved is None:
+        return original_artifact(value)
+    state, task_id, inventory = preserved
+    from cleanup import canonical_path
+    original = canonical_path(value['path'])
+    if inventory.get('remote_verification'):
+        owned=any(r.get('task_id')==task_id and r.get('path') and
+            original.is_relative_to(canonical_path(r['path'])) for r in state['runtime'].get('resources',{}).values())
+        rows=[row for row in inventory['files'] if row.get('original')==value and row['sha256']==value['sha256']]
+        if owned and len(rows)==1:return original_artifact(rows[0])
+    if io_path(value['path']).exists():return original_artifact(value)
+    cleaned = [r for r in state['runtime'].get('resources', {}).values() if
+        r.get('task_id') == task_id and r.get('cleanup_status') == 'cleaned' and r.get('path') and
+        original.is_relative_to(canonical_path(r['path']))]
+    require(cleaned, 'missing evidence outside confirmed task cleanup')
+    for resource in cleaned: original_artifact(resource['cleanup_result']['evidence'])
+    rows = [row for row in inventory['files'] if row.get('original') == value and row['sha256'] == value['sha256']]
+    require(len(rows) == 1, 'missing exact preserved evidence copy')
+    return original_artifact(rows[0])
+
+
+@contextmanager
+def preserved_read(state, task_id):
+    task = state['tasks'][task_id]
+    reference = task.get('preservation')
+    if not reference:
+        yield
+        return
+    from resource_lifecycle import preserved_binding, remote_binding
+    from cleanup import canonical_path
+    inventory = json.loads(original_artifact(reference).read_text(encoding='utf-8-sig'))
+    require(task['phase'] == 'completed' and task.get('merge', {}).get('verified') and
+        inventory.get('project_id') == state['project']['id'] and inventory.get('task_id') == task_id and
+        inventory.get('binding') == preserved_binding(task), 'preserved completed-task binding changed')
+    if inventory.get('remote_verification'):
+        remote_binding(state,task_id,inventory['source'],inventory['remote_verification'],inventory['scope'])
+    for item in [reference, *inventory['files']]:
+        path = canonical_path(original_artifact(item))
+        for resource in state['runtime'].get('resources', {}).values():
+            require(not resource.get('path') or not path.is_relative_to(canonical_path(resource['path'])),
+                    'preserved evidence inside cleanup resource')
+    token = _preserved.set((state, task_id, inventory))
+    try: yield
+    finally: _preserved.reset(token)
 
 
 def fingerprint(value):
@@ -25,7 +77,7 @@ def ref(path):
 def load_bound(value):
     path = Path(value["path"])
     require(path.is_absolute(), "artifact missing or not absolute")
-    path = io_path(path)
+    path = artifact(value)
     require(path.is_absolute() and path.is_file(), "artifact missing or not absolute")
     content = path.read_bytes()
     require(hashlib.sha256(content).hexdigest() == value["sha256"], "artifact hash mismatch")
@@ -109,6 +161,11 @@ def pack(spec):
 
 
 def report_for(state, task_id, ready=True):
+    with preserved_read(state, task_id):
+        return _report_for(state, task_id, ready)
+
+
+def _report_for(state, task_id, ready=True):
     task = state["tasks"][task_id]
     require(task["delivery"], "no bound delivery")
     from coordination import verify_completed_origin
@@ -118,7 +175,17 @@ def report_for(state, task_id, ready=True):
             and report["delivery_revision"] == task["delivery_revision"], "report identity mismatch")
     require(Path(report["source"]["root"]).resolve() == Path(task["worktree"]).resolve(),
             "source outside registered worktree")
-    if task.get('task_kind')=='read_only' and task['phase']=='completed' and not Path(task['worktree']).exists():
+    if _preserved.get() is not None and _preserved.get()[2].get('remote_verification'):
+        require(_preserved.get()[2]['source']==report['source'],'cloud-bound preserved source inventory differs')
+    elif _preserved.get() is not None and not io_path(task['worktree']).exists():
+        _, _, inventory = _preserved.get()
+        require(inventory['source'] == report['source'], 'preserved source inventory differs')
+        cleaned=[r for r in state['runtime'].get('resources',{}).values() if r.get('task_id')==task_id and
+            r.get('cleanup_status')=='cleaned' and r.get('kind')=='worktree' and
+            Path(r.get('path','')).resolve()==Path(task['worktree']).resolve()]
+        require(cleaned,'source disappeared outside confirmed owned worktree cleanup')
+        for resource in cleaned:artifact(resource['cleanup_result']['evidence'])
+    elif task.get('task_kind')=='read_only' and task['phase']=='completed' and not Path(task['worktree']).exists():
         cleaned=[r for r in state.get('runtime',{}).get('resources',{}).values() if r.get('task_id')==task_id and
             r.get('cleanup_status')=='cleaned' and r.get('path') and Path(task['worktree']).resolve().is_relative_to(Path(r['path']).resolve())]
         require(cleaned,'read-only source disappeared outside confirmed owned cleanup')

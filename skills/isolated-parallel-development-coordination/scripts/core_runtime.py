@@ -57,6 +57,10 @@ class Runtime:
     def _scope(self, state, task_id):
         require(not state.get('delivery') or task_id in state['delivery']['task_ids'], 'outside delegated task scope')
 
+    def _resource_actor(self,state,actor_id,task_id):
+        from resource_lifecycle import actor
+        return actor(state,task_id,actor_id)
+
     def _save(self, state, operation):
         state['revision'] += 1
         state['last_reconcile'] = None
@@ -91,6 +95,18 @@ class Runtime:
                 reason='Awaiting admitted host execution', user_reference=spec['user_reference']))
             if binding:
                 state['tasks'][spec['task_id']]['routing'] = binding
+            if spec.get('resource_contract'):
+                from resource_lifecycle import managed_path
+                require(spec['resource_contract']=='new-task/1','unknown new-task resource contract')
+                managed_path(state,spec['worktree'])
+                state['tasks'][spec['task_id']]['resource_contract']=spec['resource_contract']
+            else:
+                # Low-level queueing remains available, but cannot silently claim a managed closed loop.
+                state['tasks'][spec['task_id']]['resource_contract']='registration-required/1'
+            if spec.get('resource_authority'):
+                artifact(spec['resource_authority'])
+                state['tasks'][spec['task_id']]['resource_authority']=deepcopy(spec['resource_authority'])
+            result=dict(result,resource_registration='required',managed_closed_loop=False)
             write_atomic(self.path, state)
             return result
 
@@ -139,6 +155,10 @@ class Runtime:
             state = self._load()
             result = bind_observed(state, task_id, proof_ref, actor_id)
             if not result.get('duplicate'):
+                if state['tasks'][task_id].get('resource_contract')=='new-task/1':
+                    from resource_lifecycle import inventory, agent
+                    inventory(state,task_id,author=False)
+                    agent(state,task_id,proof_ref)
                 self._save(state, dict(op='bind-observed-dispatch', task_id=task_id, proof=proof_ref))
             return dict(result, revision=state['revision'])
 
@@ -178,6 +198,9 @@ class Runtime:
             if task_id is not None:
                 state['tasks'][task_id]['owner_agent_id'] = executor_id
                 state['tasks'][task_id]['worker_run']['owner_agent_id'] = executor_id
+                if state['tasks'][task_id].get('resource_contract')=='new-task/1':
+                    from resource_lifecycle import agent
+                    agent(state,task_id,authority_ref)
             if not old or task_id is not None:
                 self._save(state, dict(op='bind-executor', executor_id=executor_id))
 
@@ -188,6 +211,9 @@ class Runtime:
             self._scope(state,task_id)
             task = state['tasks'][task_id]
             require(authorized is True and attempt_id, 'scoped launch authorization required')
+            if task.get('resource_contract')=='new-task/1':
+                from resource_lifecycle import inventory
+                inventory(state,task_id,author=False)
             operations = state['runtime']['operations']
             if attempt_id in operations:
                 require(operations[attempt_id]['task_id'] == task_id, 'attempt belongs to another task')
@@ -259,6 +285,9 @@ class Runtime:
                 task['worker_run']['owner_agent_id'] = executor_id
                 task['worker_run']['attempt_id'] = attempt_id
                 record['executor_id'] = executor_id
+                if task.get('resource_contract')=='new-task/1':
+                    from resource_lifecycle import agent
+                    agent(state,task_id,admission)
                 executor.update(active_children=None,pending_work=None,observation=None)
                 try:
                     observed = adapter.call('observe', target=executor['routes'][adapter.channel]['target_id'], authorized=True)
@@ -300,14 +329,18 @@ class Runtime:
             self._save(state,dict(op='reconcile-launch',operation_id=operation_id))
             return self._launch_result(state,record)
 
-    def observe_executor(self, executor_id, facts, actor_id, evidence_ref):
+    def observe_executor(self, executor_id, facts, actor_id, evidence_ref, *, task_id=None):
         raw = load_bound(evidence_ref)
         require(raw == facts, 'observation differs from bound host facts')
         require(facts.get('execution') in ('running','completed','idle','unknown') and
                 isinstance(facts.get('active_children'),list) and type(facts.get('pending_work')) is bool,
                 'explicit execution/children/pending-work observation required')
         with writer_lock(self.path):
-            state=self._load(); self._actor(state,actor_id)
+            state=self._load()
+            if task_id is None:self._actor(state,actor_id)
+            else:
+                self._resource_actor(state,actor_id,task_id);self._scope(state,task_id)
+                require(state['tasks'][task_id]['owner_agent_id']==executor_id,'task executor differs')
             executor=state['runtime']['executors'][executor_id]
             require(facts.get('executor_id')==executor_id and facts.get('generation')==executor['generation'], 'stale executor observation')
             require(facts.get('based_on_revision')==state['revision'],'executor observation predates ledger changes')
@@ -423,7 +456,7 @@ class Runtime:
                             close_pr=None,authorized=False):
         """Finite post-end continuation; host supplies preservation and current authority."""
         require(authorized is True and operation_id,'current exact reclamation authorization required')
-        state=self._load();self._actor(state,adapter.actor_id);self._scope(state,task_id)
+        state=self._load();self._resource_actor(state,adapter.actor_id,task_id);self._scope(state,task_id)
         task=state['tasks'][task_id]
         if task['phase']=='cancelled':
             pr=self.close_cancelled_pr(task_id,operation_id+':pr',preservation_ref,
@@ -443,14 +476,35 @@ class Runtime:
             closed=next(o for o in self._load()['runtime']['operations'].values() if o.get('operation')=='close' and
                 o.get('task_id')==task_id and o.get('executor_id')==task['owner_agent_id'] and
                 o.get('generation')==executor['generation'] and o.get('status')=='closed')
-        receipt=self.release_receipt(closed['operation_id'],adapter.actor_id)
+        confirmation=closed.get('close_confirmation')
+        if confirmation and not (closed.get('request_id') and closed.get('permit_id')):
+            require(self.verify_close_confirmation(confirmation)['verified'],'canonical native confirmation is stale')
+            receipt=None
+        else:receipt=self.release_receipt(closed['operation_id'],adapter.actor_id)
         result=self.cleanup_task(task_id,operation_id+':files',preservation_ref,invoke,adapter.actor_id,
                                  authorized=True,scope=adapter.scope)
-        return dict(result,release_receipt=receipt)
+        return dict(result,release_receipt=receipt,**(dict(close_confirmation=confirmation,plugin_quota='not_reserved')
+            if receipt is None else {}))
+
+    def prepare_native_close(self,task_id,operation_id,preservation_ref,actor_id,**options):
+        from native_control import prepare
+        return prepare(self,task_id,operation_id,preservation_ref,actor_id,**options)
+
+    def claim_native_close(self,operation_id,actor_id,**options):
+        from native_control import claim
+        return claim(self,operation_id,actor_id,**options)
+
+    def verify_close_confirmation(self,reference):
+        from native_control import verify
+        return verify(self,reference)
 
     def register_resource(self,task_id,resource,authority_ref,actor_id):
         from cleanup import register
         return register(self,task_id,resource,authority_ref,actor_id)
+
+    def preserve_task(self,task_id,destination,handoff_ref,actor_id,**options):
+        from resource_lifecycle import preserve
+        return preserve(self,task_id,destination,handoff_ref,actor_id,**options)
 
     def cleanup_task(self,task_id,operation_id,preservation_ref,invoke,actor_id,**options):
         from cleanup import run
@@ -468,7 +522,7 @@ class Runtime:
     def lifecycle_guard(self, executor_id, task_id, attempt_id, generation, actor_id, preservation_ref, *, scope='fixture_only'):
         """Hold the canonical lock through the finite close/observe callback."""
         with writer_lock(self.path):
-            state=self._load();self._actor(state,actor_id)
+            state=self._load();self._resource_actor(state,actor_id,task_id)
             self._scope(state,task_id)
             executor=state['runtime']['executors'][executor_id]
             task=state['tasks'][task_id]
@@ -486,7 +540,9 @@ class Runtime:
         require(operation in ('close','resume') and authorized is True,'explicit lifecycle authorization required')
         # One persisted operation ID prevents uncertain retries after a crash.
         with writer_lock(self.path):
-            state=self._load();self._actor(state,adapter.actor_id)
+            state=self._load()
+            resource_authority=self._resource_actor(state,adapter.actor_id,task_id) if operation=='close' else None
+            if operation!='close':self._actor(state,adapter.actor_id)
             self._scope(state,task_id)
             existing=state['runtime']['operations'].get(attempt_id)
             if existing:
@@ -504,6 +560,7 @@ class Runtime:
             record=dict(operation=operation,operation_id=attempt_id,executor_id=executor_id,task_id=task_id,attempt_id=attempt_id,
                 generation=generation,status='intent',project_id=self.project_id,preservation=preservation_ref,proof_scope=adapter.scope,
                 cleanup_authorized=authorized,executor_routes=deepcopy(executor['routes']),executor_authority=executor['authority'])
+            if resource_authority:record.update(resource_authority=resource_authority,actor_id=adapter.actor_id)
             if admission:
                 permit=load_bound(admission);record.update(request_id=permit['request_id'],permit_id=permit['permit_id'],launch_identity=permit.get('launch_identity'))
             elif task_id in state['tasks']:
@@ -531,8 +588,9 @@ class Runtime:
     def release_receipt(self, operation_id, actor_id):
         """Mint a bounded resource-release fact only from this canonical operation."""
         with writer_lock(self.path):
-            state=self._load();self._actor(state,actor_id)
+            state=self._load()
             operation=state['runtime']['operations'][operation_id]
+            self._resource_actor(state,actor_id,operation['task_id'])
             self._scope(state,operation['task_id'])
             closed=operation['operation']=='close' and operation['status']=='closed'
             not_started=operation['operation'] in ('spawn','send') and operation['status'] in ('capacity','unsupported','queued','not_started')
@@ -561,6 +619,9 @@ class Runtime:
         try:
             state=self._load();value=load_bound(receipt) if 'path' in receipt else receipt
             operation=state['runtime']['operations'][value['operation_id']]
+            if operation.get('resource_authority'):
+                require(self._resource_actor(state,operation['actor_id'],operation['task_id'])==operation['resource_authority'],
+                        'task resource authority changed')
             require(operation.get('release_receipt') and load_bound(operation['release_receipt'])==value,'not a canonical release receipt')
             require(all(value.get(k)==context.get(k) for k in ('project_id','task_id','attempt_id','request_id','permit_id')),'resource context differs')
             require(value.get('launch_identity')==context.get('launch_identity'),'launch identity differs')
@@ -573,7 +634,7 @@ class Runtime:
                 artifact(executor['authority'])
                 from cleanup import eligibility
                 from task_completion import completion_flags
-                eligibility(self,state,operation['task_id'],operation['preservation'],operation['proof_scope'])
+                eligibility(self,state,operation['task_id'],operation['preservation'],operation['proof_scope'],resource_paths=False)
                 return dict(completion_flags(state,operation['task_id']),verified=True,preservation_valid=True,no_active_work=True,
                     no_active_descendants=True,no_release_dependencies=True,exclusive_task_resource=True,
                     cleanup_authorized=operation.get('cleanup_authorized') is True,protected=False)
@@ -584,17 +645,37 @@ class Runtime:
     def reconcile_lifecycle(self, operation_id, observation_ref, actor_id):
         facts=load_bound(observation_ref)
         with writer_lock(self.path):
-            state=self._load();self._actor(state,actor_id)
-            record=state['runtime']['operations'][operation_id];self._scope(state,record['task_id'])
+            state=self._load()
+            record=state['runtime']['operations'][operation_id]
+            self._resource_actor(state,actor_id,record['task_id']);self._scope(state,record['task_id'])
             executor=state['runtime']['executors'][record['executor_id']]
+            if record.get('native_request') and record['status']=='closed':
+                from native_control import confirm
+                require(record.get('host_confirmation')==observation_ref,'different duplicate native confirmation')
+                require(confirm(self,state,record,facts,observation_ref)['confirmed'],'native confirmation changed')
+                return deepcopy(record)
             require(record['operation']=='close' and record['status'] in ('intent','unknown') and
                     executor['generation']==record['generation'],'not a current uncertain close')
-            require(facts.get('operation_id')==operation_id and facts.get('executor_id')==executor['id'] and
-                    facts.get('generation')==executor['generation'] and facts.get('closed') is True and facts.get('evidence'),
-                    'actual close confirmation required; idle/completed is insufficient')
-            for item in facts['evidence']:artifact(item)
+            if record.get('native_request'):
+                from native_control import confirm
+                result=confirm(self,state,record,facts,observation_ref)
+                if not result['confirmed']:
+                    record.setdefault('host_observations',[]).append(observation_ref)
+                    record.update(status='unknown',reason=result['reason'],next_technical_owner=actor_id,
+                                  next_action='inspect_original_close_result_without_reissuing')
+                    self._save(state,dict(op='native-close-unconfirmed',operation_id=operation_id))
+                    return deepcopy(record)
+                record['host_confirmation']=observation_ref
+            else:
+                require(facts.get('operation_id')==operation_id and facts.get('executor_id')==executor['id'] and
+                        facts.get('generation')==executor['generation'] and facts.get('closed') is True and facts.get('evidence'),
+                        'actual close confirmation required; idle/completed is insufficient')
+                for item in facts['evidence']:artifact(item)
             record.setdefault('observations',[]).append(observation_ref);record['status']='closed'
             executor.update(lease='closed',execution='unknown')
+            if record.get('native_request'):
+                from native_control import receipt
+                record['close_confirmation']=receipt(self,state,record)
             task=state['tasks'][record['task_id']]
             if task['phase']=='cancelled' and task.get('worker_run'):task['worker_run']['status']='cancelled'
             self._save(state,dict(op='reconcile-close',operation_id=operation_id));return deepcopy(record)
