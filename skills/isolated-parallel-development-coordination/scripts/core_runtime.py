@@ -442,9 +442,11 @@ class Runtime:
             write_atomic(self.path,state)
             return dict(result,summary=summary(state),ledger=str(self.path),idle_wakeup=False)
 
-    def work_cycle(self, actor_id, *, observation_ref=None, collect=None, task_ids=None):
+    def work_cycle(self, actor_id, *, observation_ref=None, collect=None, task_ids=None, view='full',
+                   budget=8192, cursor=None, snapshot=None, detail=None):
         from work_cycle import run
-        return run(self, actor_id, observation_ref=observation_ref, collect=collect, task_ids=task_ids)
+        return run(self, actor_id, observation_ref=observation_ref, collect=collect, task_ids=task_ids,
+                   view=view, budget=budget, cursor=cursor, snapshot=snapshot, detail=detail)
 
     def handoff(self, task_id, actor_id, **options):
         from task_handoff import run
@@ -821,6 +823,9 @@ def main():
     sub.add_parser('recover');sub.add_parser('capabilities');sub.add_parser('routing-status')
     work=sub.add_parser('work-cycle');work.add_argument('--actor',required=True);work.add_argument('--observation')
     work.add_argument('--task',action='append',dest='task_ids')
+    work.add_argument('--view',choices=('brief','full'),default='brief')
+    work.add_argument('--budget',type=int,default=8192)
+    work.add_argument('--cursor');work.add_argument('--snapshot');work.add_argument('--detail')
     handoff=sub.add_parser('handoff');handoff.add_argument('--actor',required=True);handoff.add_argument('--task',required=True)
     handoff.add_argument('--observation');handoff.add_argument('--report');handoff.add_argument('--payload')
     handoff.add_argument('--tool',action='append',default=[],dest='available_tools')
@@ -830,7 +835,8 @@ def main():
     if args.command=='init': result=runtime.initialize(args.coordinator,worker_capacity=args.worker_capacity)
     elif args.command=='recover':result=runtime.recover()
     elif args.command=='work-cycle':result=runtime.work_cycle(args.actor,
-        observation_ref=ref(args.observation) if args.observation else None,task_ids=args.task_ids)
+        observation_ref=ref(args.observation) if args.observation else None,task_ids=args.task_ids,
+        view=args.view,budget=args.budget,cursor=args.cursor,snapshot=args.snapshot,detail=args.detail)
     elif args.command=='routing-status':result=runtime.routing_status()
     elif args.command=='handoff':result=runtime.handoff(args.task,args.actor,available_tools=args.available_tools,
         observation_ref=ref(args.observation) if args.observation else None,
@@ -843,7 +849,10 @@ def main():
         method={'apply':runtime.apply,'prepare':runtime.prepare,'resolve-next':runtime.resolve_and_next,'routing':runtime.routing,
                 'real-use':runtime.real_use,'feedback':runtime.feedback}[args.command]
         result=method(load(args.input),args.actor)
-    print(json.dumps(result,ensure_ascii=False))
+    if args.command == 'work-cycle' and args.view == 'brief':
+        print(json.dumps(result,ensure_ascii=False,separators=(',', ':')))
+    else:
+        print(json.dumps(result,ensure_ascii=False))
     if result.get('status') == 'rejected':
         sys.exit(1)
 

@@ -235,7 +235,7 @@ class WorkCycleTests(CoreFixture):
         obs = self.json('cli-obs.json', self.observation([]))
         command = [sys.executable, '-X', 'utf8', '-B', str(Path(__file__).with_name('core_runtime.py')),
             '--state-root', str(self.root/'authority'), '--project-root', str(self.root/'project'),
-            'work-cycle', '--actor', self.actor]
+            'work-cycle', '--actor', self.actor, '--view', 'full']
         before = self.runtime.path.read_bytes()
         read = subprocess.run(command, cwd=self.root, capture_output=True, encoding='utf-8', timeout=20)
         self.assertEqual(read.returncode, 0, read.stderr)

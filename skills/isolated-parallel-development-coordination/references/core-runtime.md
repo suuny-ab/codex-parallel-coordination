@@ -44,6 +44,8 @@ python -X utf8 -B skills/isolated-parallel-development-coordination/scripts/core
 
 第一种只读；未提交本次观察时，即使保留的 last_reconcile 指纹仍有效，也标记为最后登记，当前执行计数为 null。第二种仅当前技术写入角色可调用，复用 `coordination-closeout/1` 输入及原来源/修订/委托/幂等校验。原主会话不能带观察代替当前集成者写入。
 
+CLI 默认返回[主会话四块轻量简报](main-brief.md)，含预算、同 revision 续读、来源变化拒绝及详情契约；`--view full` 保留下面的完整诊断结构。Python 为兼容在途宿主保持原完整默认，请显式传 `view='brief'` 取相同简报。读取不确认展示、不清空通知；每页仍复核原证据，不保证提速。
+
 技术身份沿用两条既有通路：已配置 global delivery 时保持原 cycle 校验；没有 global delivery、已有 `bind_observed_dispatch` 登记时，复核原 approved-dispatch-plan/1、真实派发绑定、作者/工作树/分支及 executor generation，只有其已批准 reviewer 能收取绑定的 task scope。不会把任务收件授权变成全局角色，不要求补造 required_ci_jobs、CI pipeline 或全局 delegate。主会话可从同一合法绑定读到当前任务的集成责任。过期批准/派发依据、作者冒认、其它任务输入均拒绝，采集前及持锁消费前都重验。没有任何已绑定派发的旧未委托账本才保留原 cycle 的角色校验。
 
 任务收件通路在现有 closeout 中复用 `receive_observed`，只消费本范围的当前来源回执和原缓冲，不运行全局 drain，也不修改其它任务。worker 携 receipt 时，evidence 必须是现有 observed_execution 可核的真实终态快照；inbox.messages 中的任务回执需带对应 origin_observation ref。发送接受或文件报告不能代替真实终态来源。observation.task_scope 和 next_action.task_ids 说明责任与覆盖边界；其它任务仅保留最后登记，不从当前任务授权推导旧任务的清理权。

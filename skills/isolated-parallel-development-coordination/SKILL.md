@@ -7,7 +7,7 @@ description: 主会话对齐需求并核对spec，用户批准拆合与派发摘
 
 用户只在原主会话讨论、决策和验收。每个获批 spec 对应一需求、一开发 agent、一隔离工作树和一个 PR；原作者实现、自测并维护原 PR，唯一集成者独审及授权内串行合 main。主会话不代做编码、自测或普通技术跟进。
 
-已有账本的主会话/集成者在工作开始或结束用 `Runtime.work_cycle` / `core_runtime.py work-cycle`，见[统一工作入口](references/core-runtime.md#一轮工作入口)。主会话用真实主身份只读；当前授权集成者有限收件对账，返回同 revision 的一项用户事项或下一责任及开发/交付/清理摘要。无新观察只报最后登记，不重建账本或冒用身份。
+已有账本的主会话/集成者在工作开始或结束用 `core_runtime.py work-cycle`，默认取[四块轻量简报及续读/详情](references/main-brief.md)；Python 用 `Runtime.work_cycle(..., view='brief')`，旧默认完整结构及 CLI `--view full` 保留。见[统一工作入口](references/core-runtime.md#一轮工作入口)。主会话用真实主身份只读；当前授权集成者有限收件对账。各块同 revision，超预算明确剩余数量和续读入口；无新观察只报最后登记，不重建账本或冒用身份。
 
 需用户回复的事项串行；已核阶段/资源通知沿[独立反馈通路](references/stage-feedback.md)收到即展示，不等 active 事项结束或用户空闲、不切换焦点。发送接受不等于实际展示，未确认变化保留恢复记录；仍不保证空闲自动唤醒。
 

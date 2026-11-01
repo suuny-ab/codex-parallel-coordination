@@ -287,7 +287,7 @@ class StageFeedbackTests(FeedbackFixture):
         self.emit()
         cmd = [sys.executable, '-X', 'utf8', '-B', str(Path(__file__).with_name('core_runtime.py')),
                '--state-root', str(self.root/'authority'), '--project-root', str(self.root/'project')]
-        result = subprocess.run(cmd+['work-cycle', '--actor', self.actor], cwd=self.root, capture_output=True, encoding='utf-8', timeout=20)
+        result = subprocess.run(cmd+['work-cycle', '--actor', self.actor, '--view', 'full'], cwd=self.root, capture_output=True, encoding='utf-8', timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(json.loads(result.stdout)['display_required'])
         command = self.json('cli-fake-display.json', dict(op='confirm-display', notification_ids=self.ids(), proof=self.file('fake.log')))
