@@ -71,6 +71,8 @@ nodeRepl.write(result);
 
 副作用在唯一账本 `runtime.operations` 先记 intent，再执行。native、安装回调及清理回调不持 CORE 写锁；返回重读当前状态。清理重入同一轮可汇总迟到核证，intent/unknown 的删除不重做。保全采用原操作标记和逐文件字节复核接续原目录，标记或副本变化即阻断。
 
+清理及 launch/observe 的回调返回先按原 intent 写入不可变结果证据，位置在资源回收目录之外。CORE 回锁或重读失败立即退出，不用旧 snapshot 保存，也不抢占另一写者。锁释放后，已核清理返回仍须匹配原 operation/resource/preservation、当前权限和保护条件，才由同一轮登记；unknown 等待原操作核证，不重做删除或 native 调用。结果文件是证据，不是第二任务队列或授权来源。
+
 硬退出遗留锁不是重派理由。实际 ROOT 可显式调用：
 
 ```python

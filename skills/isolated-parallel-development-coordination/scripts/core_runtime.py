@@ -10,7 +10,7 @@ import sys
 
 from coordination import (new_state, validate, transition, writer_lock, summary,
                           checkpoint, next_item, presentation, receipt_context, receipt_report)
-from evidence import load, write_atomic, ref, artifact, load_bound, require, fingerprint, io_path
+from evidence import load, write_atomic, ref, artifact, callback_result, load_bound, require, fingerprint, io_path
 from progress import round_handoff
 from reconcile import closeout
 
@@ -304,22 +304,31 @@ class Runtime:
                 route['attempt_id'] = attempt_id
             # Persist before invoking a tool. A crash leaves intent/unknown, never a second send.
             self._save(state, dict(op='launch-intent', task_id=task_id, attempt_id=attempt_id))
+            safe_to_save=True
             def call_host(operation, **arguments):
-                nonlocal state, task, record, executor
+                nonlocal state, task, record, executor, safe_to_save
+                binding=dict(project_id=self.project_id,task_id=task_id,attempt_id=attempt_id,
+                    actor_id=adapter.actor_id,operation=operation,arguments=deepcopy(arguments),task=deepcopy(task),
+                    launch={key:deepcopy(record.get(key)) for key in ('operation','request_id','permit_id','admission',
+                        'executor_id','generation','launch_identity','route_id')})
+                record.setdefault('callback_captures',{})[operation]=binding
+                self._save(state,dict(op='launch-callback-intent',task_id=task_id,attempt_id=attempt_id,operation=operation))
                 expected_task,expected_operation=deepcopy(task),deepcopy(record)
                 expected_executor=deepcopy(executor)
+                safe_to_save=False
                 locks.close()
                 try:
-                    try: actual=adapter.call(operation,authorized=True,**arguments)
-                    except Exception as error:
-                        from host_adapter import error_detail
-                        actual=dict(status='unknown',error_type=type(error).__name__,error=error_detail(error))
-                finally:
-                    locks.enter_context(writer_lock(self.path))
-                    state=self._load();task=state['tasks'][task_id];record=state['runtime']['operations'][attempt_id]
-                    executor=state['runtime']['executors'].get(executor_id) if executor_id else None
+                    actual=adapter.call(operation,authorized=True,**arguments)
+                except Exception as error:
+                    from host_adapter import error_detail
+                    actual=dict(status='unknown',error_type=type(error).__name__,error=error_detail(error))
+                captured=callback_result(self.directory,binding,result=actual,capture=True)
+                locks.enter_context(writer_lock(self.path))
+                state=self._load();task=state['tasks'][task_id];record=state['runtime']['operations'][attempt_id]
+                executor=state['runtime']['executors'].get(executor_id) if executor_id else None
+                safe_to_save=True
                 unchanged=task==expected_task and record==expected_operation and executor==expected_executor
-                record.setdefault('host_results',[]).append(dict(operation=operation,result=deepcopy(actual)))
+                record.setdefault('host_results',[]).append(dict(operation=operation,result=deepcopy(actual),capture=captured))
                 try:
                     self._actor(state,adapter.actor_id);self._scope(state,task_id)
                     if route_id:
@@ -373,6 +382,7 @@ class Runtime:
                     else:
                         record.update(status='accepted_unconfirmed', reason='message accepted; execution not observed running')
                 except Exception as error:
+                    if not safe_to_save:raise
                     from host_adapter import error_detail
                     record.update(status='accepted_unconfirmed', error_type=type(error).__name__, error=error_detail(error))
             if record['status'] != 'running':
@@ -381,7 +391,9 @@ class Runtime:
             return self._launch_result(state, record)
 
     def _launch_result(self, state, record):
-        return dict(deepcopy(record), revision=state['revision'],
+        captures={key:reference for key,binding in record.get('callback_captures',{}).items()
+            if (reference:=callback_result(self.directory,binding)) is not None}
+        return dict(deepcopy(record), revision=state['revision'],callback_results=captures,
             public_progress='已实际开始执行。' if record['status']=='running' else
                 '已派发，执行状态待核实；由授权集成者观察原身份，不重复派发。' if
                     record['status'] in ('intent','unknown','accepted_unconfirmed') else
