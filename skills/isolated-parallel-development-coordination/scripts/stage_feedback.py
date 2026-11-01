@@ -62,12 +62,23 @@ def cleanup_fact(state, key):
     for resource in resources:
         result = resource.get('cleanup_result') or {}
         status = resource.get('cleanup_status', 'unknown')
+        reason = result.get('reason')
         proof = result.get('evidence')
         try:
             if resource['kind'] == 'agent':
                 close = confirmed_close(state, key)
                 if close and resource.get('executor_id') == task['owner_agent_id'] and resource.get('generation') == state['runtime']['executors'][task['owner_agent_id']]['generation']:
                     status, proof = 'cleaned', close
+                elif status != 'cleaned':
+                    executor = state['runtime'].get('executors', {}).get(task['owner_agent_id'], {})
+                    pending_close = next((o for o in state['runtime'].get('operations', {}).values() if
+                        o.get('operation') == 'close' and o.get('task_id') == key and
+                        o.get('executor_id') == resource.get('executor_id') == task['owner_agent_id'] and
+                        o.get('generation') == resource.get('generation') == executor.get('generation') and
+                        o.get('status') in ('intent', 'unknown')), None)
+                    if pending_close and executor.get('lease') in ('closing', 'unknown'):
+                        status = 'intent' if pending_close['status'] == 'intent' else 'unknown'
+                        reason = 'close_pending_confirmation'
             if status == 'cleaned':
                 artifact(proof)
                 if resource['kind'] == 'agent':
@@ -78,7 +89,7 @@ def cleanup_fact(state, key):
         except ERRORS:
             status = 'unknown'
         rows.append(dict(resource_id=resource['id'], kind=resource['kind'], status=status,
-                         reason=result.get('reason'), protected=bool(resource.get('protected')),
+                         reason=reason, protected=bool(resource.get('protected')),
                          shared=bool(resource.get('shared'))))
     # Missing registration or observation stays explicit, including temporary data.
     for kind in ('agent', 'process', 'worktree', 'temporary_data'):
@@ -98,7 +109,8 @@ def cleanup_fact(state, key):
     labels = dict(agent='开发者上下文', process='进程/测试服务', worktree='工作树', database='临时数据',
                   environment='验收环境', artifact='临时文件', temporary_data='临时数据')
     status_labels = dict(cleaned='已回收', retained='待清理', intent='正在核对回收', failed='回收失败', unknown='待核实')
-    details = list(dict.fromkeys(labels[r['kind']] + '：' + status_labels.get(r['status'], '待核实') +
+    details = list(dict.fromkeys(labels[r['kind']] + '：' +
+        ('关闭待确认' if r.get('reason') == 'close_pending_confirmation' else status_labels.get(r['status'], '待核实')) +
         ('（受保护）' if r.get('protected') else '（共享引用待核对）' if r.get('shared') else
          '（未登记或未观察）' if r.get('reason') == 'not_registered_or_observed' else
          '（需核对实际效果）' if r['status'] in ('failed', 'unknown') else
@@ -163,7 +175,7 @@ def task_facts(state, key):
                            evidence=[task.get('delivery')] if task.get('delivery') else [], source=deepcopy(blocker)))
     if task.get('cleanup') or task['phase'] == 'completed':
         value = cleanup_fact(state, key)
-        label = dict(all='全部回收', partial='部分回收', failed='回收失败', in_progress='正在回收',
+        label = dict(all='全部回收', partial='部分回收', failed='回收失败', in_progress='回收处理中（结果待确认）',
                      unknown='回收待核实', pending='待清理')[value['outcome']]
         result.append(dict(kind='cleanup', outcome=dict(status=value['outcome'], resources=value['resources']),
             text=label+'；'+value['details']+'；后续由集成者负责', evidence=value['evidence'], source=None,

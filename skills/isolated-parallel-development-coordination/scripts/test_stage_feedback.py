@@ -324,6 +324,9 @@ class NativeReceiptFeedbackTests(CoreFixture):
     def test_latest_main_native_confirmation_is_consumed_without_a_quota_receipt(self):
         proof, _ = self.ready()
         prepared = self.runtime.prepare_native_close('A', 'root-close', proof, self.actor, authorized=True, scope='fixture_only')
+        pending = cleanup_fact(self.runtime._load(), 'A')
+        self.assertIn('关闭待确认', pending['details'])
+        self.assertNotIn('开发者上下文：已回收', pending['details'])
         self.runtime.claim_native_close('root-close', self.actor, authorized=True)
         observed = test_native_control.NativeControlTests.observation(self, prepared['native_request'])
         self.runtime.reconcile_lifecycle('root-close', observed, self.actor)

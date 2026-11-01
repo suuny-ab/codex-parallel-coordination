@@ -16,6 +16,8 @@
 
 沿最新已合 main 消费普通 `release_receipt` 或 ROOT 原生 `close_confirmation`；后者只证明已核当前开发者上下文关闭，不推断平台名额。已保全完成任务的报告沿原 `preserved_read` 读取外部/云端绑定证据，不能让旧工作树成为永久前提。通知不重新执行关闭、目录回收或保全。
 
+已登记当前关闭 intent 且 lease=closing/unknown 时，即使单项资源仍保留 retained，也显示“关闭待确认”；只有 canonical 当前确认成功才显示“已回收”。准备关闭、请求接受或 not_found 单独出现均不证明关闭效果。
+
 最小状态是 `pending`、`sent_unconfirmed`、`displayed`，另保留失效的 `superseded`。它们和发送 attempt 存在同一账本，保留来源修订/证据引用与最小去重记录；通知不修改角色、审批、接受、任务阶段或清理状态。重启后下一次主会话工作周期补齐未展示变化。
 
 ## 有限转交与展示确认
