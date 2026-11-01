@@ -1,14 +1,15 @@
 // Bounded stdio bridge for the current node_repl + functions host. No server.
-import {spawn} from 'node:child_process';
+import {ChildProcess, spawn} from 'node:child_process';
 import {createInterface} from 'node:readline';
 import {fileURLToPath} from 'node:url';
 import path from 'node:path';
-import {open, readFile, mkdir, link, unlink} from 'node:fs/promises';
+import {open, readFile, readdir, mkdir, link, unlink} from 'node:fs/promises';
 import {createHash, randomUUID} from 'node:crypto';
 
 const native = new Set(['multi_agent_v1__spawn_agent', 'multi_agent_v1__wait_agent']);
 const handoff = new Set(['send_input', 'mcp__codex_app__send_message_to_thread']);
 const allowed = new Set([...native, ...handoff]);
+const prehostRecovery = Symbol('original terminal session observation');
 const stable = value => JSON.stringify(value, (_, item) => item && typeof item === 'object' && !Array.isArray(item) ?
   Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
 
@@ -25,7 +26,7 @@ export function serializeHostError(error) {
 export class DispatchSession {
   // profile, approvalOrigin and requestMeta are supplied by the trusted host,
   // separately from the task request. Never spread task JSON into this object.
-  constructor({python, profile, request, requestMeta, approvalOrigin, availableTools, testingScope = 'fixture_only', reconcileResult = null, rebaseQueued = false, recoverOnly = false}) {
+  constructor({python, profile, request, requestMeta, approvalOrigin, availableTools, testingScope = 'fixture_only', reconcileResult = null, rebaseQueued = false, recoverOnly = false, [prehostRecovery]: terminal = null}) {
     if (typeof rebaseQueued !== 'boolean' || rebaseQueued && reconcileResult) throw new Error('separate finite rebase or reconciliation action required');
     if (!requestMeta?.threadId || !path.isAbsolute(python) || !profile?.integration_target || !request?.sha256) {
       throw new Error('authenticated thread metadata, fixed profile and bound request required');
@@ -82,6 +83,7 @@ export class DispatchSession {
       recoverOnly ? RECOVERY_DEADLINE_MS : HOST_DEADLINE_MS);
     this.child.stdin.write(JSON.stringify({protocol: 'standard-dispatch-host/1', profile, request,
       reconcile_result: reconcileResult,
+      prehost_recovery: terminal,
       rebase_queued: rebaseQueued,
       recover_only: recoverOnly,
       host: {actor_id: requestMeta.threadId, user_origin: approvalOrigin, available_tools: [...this.tools],
@@ -237,5 +239,52 @@ export class DispatchSession {
     const packet = await session.next();
     if (packet.kind !== 'result') { session.child.kill(); throw new Error('verification cannot issue host actions'); }
     return packet;
+  }
+
+  async resumePrehost(requestMeta) {
+    // Only this original in-memory host session can attest no action escaped.
+    // A task JSON/file or a new session cannot manufacture this private sideband.
+    const prototype = Object.getPrototypeOf(this);
+    if (prototype?.constructor?.name !== 'DispatchSession' || typeof prototype.next !== 'function' ||
+        typeof prototype.reply !== 'function' || !(this.child instanceof ChildProcess) || this.child.spawnfile !== this.options?.python ||
+        !this.closed || this.calls !== 0 || this.pending || this.replying || this.retainedResult || this.resultRefs.length ||
+        this.recoverOnly || this.options.rebaseQueued || requestMeta?.threadId !== this.actorId) {
+      throw new Error('original terminal zero-host session required; observe existing intent');
+    }
+    await this.exited;
+    if (!Number.isInteger(this.child.exitCode) && !this.child.signalCode) throw new Error('original child terminal result required');
+    if (this.prehostContinuation) return this.prehostContinuation;
+    // Assign the promise before filesystem waits so concurrent explicit resumes
+    // share one continuation, not two children or two candidate spawns.
+    this.prehostContinuation = DispatchSession.prototype.continuePrehost.call(this, requestMeta);
+    return this.prehostContinuation;
+  }
+
+  async continuePrehost(requestMeta) {
+    const owners = [];
+    for (const name of await readdir(this.evidenceRoot)) {
+      if (!/^host-owner-.*\.json$/.test(name)) continue;
+      const target = path.join(this.evidenceRoot, name);
+      const bytes = await readFile(target);
+      const owner = JSON.parse(bytes.toString('utf8'));
+      if (owner.process?.pid === this.child.pid && owner.binding?.actor_id === this.actorId &&
+          stable(owner.binding?.request_ref) === stable(this.options.request)) {
+        owners.push({value: owner, ref: {path: target, sha256: createHash('sha256').update(bytes).digest('hex')}});
+      }
+    }
+    if (owners.length !== 1) throw new Error('unique original host owner source required');
+    const proof = {schema: 'dispatch-prehost-terminal/1', binding: owners[0].value.binding, owner: owners[0].ref,
+      child_pid: this.child.pid, closed: true, exit_code: this.child.exitCode, signal: this.child.signalCode,
+      host_calls: this.calls, pending: this.pending, result_refs: [...this.resultRefs], scope: this.options.testingScope};
+    const bytes = JSON.stringify(proof, null, 2) + '\n';
+    const target = path.join(this.evidenceRoot, 'prehost-terminal-' + createHash('sha256').update(bytes).digest('hex') + '.json');
+    try {
+      const file = await open(target, 'wx');
+      try { await file.writeFile(bytes); await file.sync(); } finally { await file.close(); }
+    } catch (error) {
+      if (error.code !== 'EEXIST' || await readFile(target, 'utf8') !== bytes) throw error;
+    }
+    const terminal = {path: target, sha256: createHash('sha256').update(bytes).digest('hex')};
+    return new DispatchSession({...this.options, requestMeta, [prehostRecovery]: terminal});
   }
 }

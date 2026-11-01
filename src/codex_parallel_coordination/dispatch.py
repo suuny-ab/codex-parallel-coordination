@@ -49,7 +49,7 @@ class StandardDispatch:
                     'queued baseline state changed; recheck original request')
             value = state['runtime']['operations'].setdefault(identity, {})
             value.update(deepcopy(changes))
-            self.runtime._save(state, dict(op='standard-dispatch', request_id=identity))
+            self.runtime._save(state, dict(op='standard-dispatch', request_id=identity, task_id=value['task_id']))
             return deepcopy(value)
 
     def _evidence(self, identity, name, value):
@@ -391,6 +391,36 @@ class StandardDispatch:
                         for k, v in resource.items()), 'existing resource differs')
             return
         self.runtime.register_resource(request['task_id'], resource, request['approval'], self.actor)
+
+    def resume_prehost(self, request, observation, *, authorized=False):
+        """Explicit original-host continuation, never file-derived authorization."""
+        require(authorized is True, 'trusted terminal host sideband required')
+        if 'spec_check' in request:
+            request = approved_request(request)
+        identity = request['request_id']
+        state = self.runtime._load()
+        self.runtime._actor(state, self.actor, control=True)
+        old = state['runtime']['operations'][identity]
+        require(old.get('request_digest') == fingerprint(request), 'conflicting recovery request')
+        if old.get('status') == 'dispatched':
+            return self.status(identity)
+        from prehost_recovery import check
+        require(check(self.runtime, state, identity+':launch', observation, self.actor, self.bridge.evidence) == request,
+                'prehost observation differs from original request')
+        self._preflight(request, old)
+        source = load_bound(old['admission']['admission'])
+        resource, _ = self.bridge.controller.read()
+        permit = resource['capacity_requests'][identity+':capacity']
+        from .resources.support import fingerprint as resource_fingerprint
+        require(permit['status'] == 'granted' and permit['permit_id'] == source['permit_id'] and
+            permit['spec'] == load_bound(ref(self.bridge.evidence/('dispatch-'+fingerprint(identity)+'-capacity.json'))) and
+            permit['spec_digest'] == resource_fingerprint(permit['spec']),
+            'original RESOURCE admission no longer granted')
+        route = state['runtime']['intake']['routes'][identity+':route']
+        self.runtime.launch(request['task_id'], self.developer, attempt_id=identity+':launch',
+            admission=old['admission']['admission'], authorized=True, message=route['message'], spawn=True,
+            route_id=identity+':route', prehost_recovery=observation, dispatch_evidence_root=self.bridge.evidence)
+        return self._finish(request, self.runtime._load()['runtime']['operations'][identity])
 
     def _finish(self, request, old):
         identity, task_id = request['request_id'], request['task_id']

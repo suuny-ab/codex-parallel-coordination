@@ -37,6 +37,10 @@ python -X utf8 -B tools/profile.py uninstall --profile C:/explicit-isolated-prof
 
 ## 运行逻辑改动时的回归入口
 
+派发反馈范围与 prehost 恢复的定向批次：`python -X utf8 -B tests/run_dispatch_scope_recovery.py --output C:/explicit-evidence/dispatch-scope --batch focused test_dispatch_scope_recovery test_dispatch_prehost_transport`。runner 使用现有 heavy 互斥、独占 TEMP、源码前后指纹，保留红测、失败及复跑；Windows 输出根过长时另选当前任务的较短专属目录，不改全局 longpaths。宿主测试复制原 host 模块字节，只在隔离 Python 端点注入 intent 后强退；覆盖原子进程终态、重复恢复、832 旧版真实实例接入新版 prototype 和实际 stdio 调用回执。native 返回仍是 fixture，不能据此宣称原生资源关闭/释放。
+
+真实捕获比较用 `tests/profile_dispatch_capture.py --input ABSOLUTE_CAPTURE.json --output ABSOLUTE_NEW_OUTPUT --baseline COMMIT --request ORIGINAL_REQUEST_ID`，保全整份输入字节及比较实际读取的不可变证据，分别报告原/新保存组件耗时。`tests/capture_dispatch_state.py --output ABSOLUTE_NEW_OUTPUT INPUT...` 仅冻结输入及直接绑定工件，不递归扩展历史包。设置 `COORDINATION_REAL_CAPTURE` 为 profile 输出、`COORDINATION_REAL_DISPATCH_INPUT` 为原请求/RESOURCE/profile 冻结目录后，在同一 runner 中增加 `test_dispatch_real_capture`，保留全部历史任务和通知，记录路径/项目/文件及宿主身份的隔离映射；缺输入明确 skip。原 dispatcher 在同一捕获副本仍停在 intent，新入口以原任务/许可走到 host_call 并记录 fixture 原始回复及完整接续耗时。临时模拟路径不是长期凭据；原始捕获、来源字节和重现命令须在树外保全。实际 native 最终验收由获权 ROOT/集成者使用当前既有任务另核。
+
 保全边界定向回归使用 `python -X utf8 -B tools/run_preservation_tests.py --output C:/explicit-evidence/preservation --batch focused test_preservation_boundary test_preservation_refs test_historical_artifacts test_resource_closed_loop test_native_control test_cleanup_runtime`。runner 使用专属 TEMP 和既有 heavy 互斥，保留完整输出、失败/跳过及前后源码指纹。对单个新任务用例可加 `--baseline COMMIT`，只替换原 `preserve` 函数并保留 Git 原始源码字节，在相同批准/文件输入上比较红绿；不切换工作树。旧3案例材料另做有界只读复制，原报告和失败不改。夹具不代表实际旧资源关闭。
 
 派工超时修复使用 `python -X utf8 -B tests/run_dispatch_timeout.py --output C:/explicit-evidence/dispatch-timeout --batch focused test_dispatch_timeout test_dispatch_late test_callback_lock_contention test_dispatch_queued_base`。runner 将临时根登记在该证据目录内，使用现有 heavy 互斥，保留命令、源码前后指纹、失败及跳过。`--baseline COMMIT` 只用于所选原函数的隔离红测，另保留 Git 原始源码字节；不切换或修改工作树。
