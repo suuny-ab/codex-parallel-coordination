@@ -74,7 +74,11 @@ def main():
     bridge = ResourceBridge(runtime, controller, artifacts, profile['evidence_root'])
     dispatch = StandardDispatch(runtime, bridge, git, developer, integration, host['user_origin'], profile['integration_target'])
     try:
-        result = dispatch.reconcile_host_result(request, bootstrap['reconcile_result']) if bootstrap.get('reconcile_result') else dispatch.run(request)
+        if bootstrap.get('rebase_queued') is True:
+            require(not bootstrap.get('reconcile_result'), 'separate queued rebase and host reconciliation required')
+            result = dispatch.rebase_queued(request, authorized=True)
+        else:
+            result = dispatch.reconcile_host_result(request, bootstrap['reconcile_result']) if bootstrap.get('reconcile_result') else dispatch.run(request)
     except Exception as error:
         record = runtime._load()['runtime']['operations'].get(request['request_id'])
         if not record or record.get('operation') != 'standard-dispatch':

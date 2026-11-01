@@ -21,6 +21,16 @@
 
 `approved_request` 从冻结文件派生其余字段。`acceptance_type` 必须是当前任务实际确认的 `delivery_verified` 或 `user_required`。同一请求始终使用相同 id 和字节；不能换 id 绕过 unknown、accepted_unconfirmed 或已经存在的作者。当前入口每次接收单 spec 的批准；已有多项摘要仍使用正式 routing 接口，不能拆写或伪造原批准。
 
+## 纯排队请求的技术重基线
+
+已登记的原 RESOURCE queued 请求遇 main 前进时，原主会话经当前明确的同范围技术重基线授权，可单独调用 `StandardDispatch.rebase_queued(original_request, authorized=True)`。受信 stdio 宿主对应 `new DispatchSession({...ORIGINAL_TRUSTED_HOST_OPTIONS, request: SAME_BOUND_REQUEST_REF, requestMeta: nodeRepl.requestMeta, rebaseQueued: true})`，外层仍设 `timeout_ms: 50000`，只取一次 `next()` 的 result。固定宿主 options 不能来自 task JSON；该布尔值是本次真实授权 sideband，不是文件自授权限。重基线与 reconcileResult 不能组合。
+
+此动作只检查并追加 `base_revisions` 指纹证据，返回原 queued 状态、effective_base_main 和空 host_actions，不创建树/分支、不调用 native、不申请或释放 permit。必需原 request digest、批准/spec/项目/路径/分支/作用域一致；CORE 原记录仍为 RESOURCE queued，尚无树/branch/资源/launch/host intent/作者；同一 RESOURCE 请求当前仍 queued 或已正常 granted；实际 local/remote main 一致，前一有效基线是当前 main 的祖先。任一条件不足即拒绝；unknown、已接受、已创建及活跃作者绝不适用。
+
+原 APPROVED/DISPATCH 请求及旧失败不改写。后续原调用方明确恢复正常 `DispatchSession`（不设 rebaseQueued），继续同一 request/task/attempt 和 RESOURCE 请求；入口每次重新核证基线链及当前 main，再从有效基线创建唯一原树，仍按真实准入和 host 结果推进。main 又前进时只能在仍满足纯排队条件下再追加一次，不换 ID 或自动轮询。没有该当前技术授权时保留 stale 提示，由集成者给原主会话最小步骤。
+
+检查期间不占用 CORE 长写锁等待 Git/网络；追加时用原 revision 核对，账本已变化则拒绝，保留并发变化及未登记的原证据。后续显式重新核实仍用原 request/task/attempt，新的观察证据带对应 revision，不覆盖先前文件。
+
 ## 当前宿主的有界接入
 
 `src/codex_parallel_coordination/dispatch.py` 的 `StandardDispatch.run` 复用 Runtime.routing/launch、ResourceBridge.prepare_development/admit、GitWorktrees.create 及原 CORE/RESOURCE 登记入口。新任务沿用 new-task/1；已有明确预留的登记不伪改成新建。输入文件不能指定 actor、state-root、授予权限或选择宿主可用能力。只接受当前原主会话 actor；固定 profile 来自受信宿主配置，不能从 task JSON 加载。现有全局 delivery 委托如果排除了主会话 launch，应先交集成者核实其授权边界，入口不冒用交付者身份。
