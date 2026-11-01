@@ -118,8 +118,15 @@ def git(root, *args):
 
 
 def snapshot(root, kind=None, extra=()):
+    return _snapshot(root, kind, extra)
+
+
+def _snapshot(root, kind, extra, *, complete=False):
     root = Path(root).resolve(strict=True)
     require(root.is_dir(), "source root missing")
+    scan_root = root
+    if os.name == 'nt' and not str(root).startswith('\\\\?\\'):
+        scan_root = Path('\\\\?\\UNC\\'+str(root)[2:] if str(root).startswith('\\\\') else '\\\\?\\'+str(root))
     kind = kind or ("git" if (root / ".git").exists() else "directory")
     require(kind in ("git", "directory"), "unknown inventory kind")
     if kind == "git":
@@ -129,25 +136,41 @@ def snapshot(root, kind=None, extra=()):
                                  "--others", "--exclude-standard"], capture_output=True,
                                 check=True, timeout=20)
         paths = sorted(set(x.decode("utf-8") for x in result.stdout.split(b"\0") if x))
+        legacy_paths = set(paths)
+        result = subprocess.run(["git", "-c", "core.longpaths=true", "-C", str(root), "ls-files", "-z", "--cached",
+                                 "--others", "--exclude-standard"], capture_output=True,
+                                check=True, timeout=20)
+        paths = sorted(legacy_paths | {x.decode("utf-8") for x in result.stdout.split(b"\0") if x})
     else:
-        paths = sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if io_path(p).is_file())
+        paths = sorted(p.relative_to(scan_root).as_posix() for p in scan_root.rglob("*") if p.is_file())
     files = []
+    supplements = [ref(artifact(x)) for x in extra]
     for relative in paths:
         path = root / relative
-        physical = io_path(path)
-        require(not physical.is_symlink() and path.resolve().is_relative_to(root),
+        physical = scan_root / relative
+        require(not physical.is_symlink() and physical.resolve().is_relative_to(scan_root),
                 "source symlinks/escaping paths unsupported")
         require(not physical.is_dir(), "submodule source requires separate evidence")
-        files.append({"relative": relative, "sha256": digest(path) if physical.is_file() else None})
-    require(files, "empty source inventory")
+        visible = path.is_file()
+        listed = relative in legacy_paths if kind == 'git' else visible
+        if complete or listed:
+            files.append({"relative": relative, "sha256": digest(physical) if
+                          (physical.is_file() if complete else visible) else None})
+        if not complete and physical.is_file() and (not visible or not listed):
+            actual = ref(physical)
+            if actual not in supplements:
+                supplements.append(actual)
+    require(files or supplements, "empty source inventory")
     value = {"root": str(root), "kind": kind, "files": files,
-             "extra": [ref(artifact(x)) for x in extra]}
+             "extra": supplements}
     value["digest"] = fingerprint(value)
     return value
 
 
 def verify_source(value):
-    require(snapshot(value["root"], value["kind"], value.get("extra", [])) == value,
+    # Preserve immutable legacy/null+SHA and complete-SHA reports, checking all bytes.
+    require(snapshot(value["root"], value["kind"], value.get("extra", [])) == value or
+            _snapshot(value["root"], value["kind"], value.get("extra", []), complete=True) == value,
             "source inventory changed (including added/deleted files)")
 
 

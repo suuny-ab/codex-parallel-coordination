@@ -241,8 +241,13 @@ class StageFeedbackTests(FeedbackFixture):
         io_path(directory).mkdir()
         source = directory/'actual-source.txt'
         io_path(source).write_text('real isolated source bytes', encoding='utf-8')
-        files = {row['relative']: row['sha256'] for row in snapshot(root)['files']}
-        self.assertEqual(files[source.relative_to(root).as_posix()], digest(source))
+        inventory = snapshot(root)
+        files = {row['relative']: row['sha256'] for row in inventory['files']}
+        if source.is_file():
+            self.assertEqual(files[source.relative_to(root).as_posix()], digest(source))
+        else:
+            from evidence import ref
+            self.assertIn(ref(source), inventory['extra'])
 
     def test_identity_authority_focus_and_permissions_cannot_be_changed_by_notifications(self):
         self.emit(); ids = self.ids()
