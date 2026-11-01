@@ -7,10 +7,13 @@
 | 你现在要做什么 | 阅读入口 |
 | --- | --- |
 | agent 执行协调任务 | [SKILL：共同边界及角色选择](skills/isolated-parallel-development-coordination/SKILL.md)，然后只读本角色当前阶段 |
+| 已有账本，开始或结束一轮工作 | [统一 work-cycle 入口](skills/isolated-parallel-development-coordination/references/core-runtime.md#一轮工作入口)：主会话只读，当前授权集成者有限收件核对 |
 | 了解主会话、开发者、集成者的分工 | [共同规则](skills/isolated-parallel-development-coordination/references/current-rules.md) |
 | 构建、验证或管理隔离文件副本 | [本地验证与打包](docs/validation.md) |
 | 调用账本或资源接口 | [CORE 运行契约](skills/isolated-parallel-development-coordination/references/core-runtime.md)、[RESOURCE API](docs/resource/API.md)，按动作查阅 |
 | 追查旧版本、撤回策略或失败轨迹 | [历史索引](skills/isolated-parallel-development-coordination/references/history/index.md)，按需读取 |
+
+`work-cycle` 返回同 revision 的至多一项用户事项、下一责任及开发/交付/清理摘要；无新观察只报最后登记，完成但待清理不表示所有工作结束。它复用原收件/closeout/progress，不自动执行、清理或轮询。
 
 从仓库根可构建和检查便携包；输出使用自己获准的新路径：
 

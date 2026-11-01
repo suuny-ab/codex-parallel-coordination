@@ -79,9 +79,17 @@ def current_observation_issues(state, by_task):
     return discoveries, issues
 
 
-def closeout(original, observation, observation_ref, actor_id=None):
+def closeout(original, observation, observation_ref, actor_id=None, task_scope=None):
     from coordination import checkpoint, transition, validate
     validate(original)
+    if task_scope is not None:
+        from work_cycle import task_receivers
+        require(not original.get('delivery') and task_scope and
+            all(task_receivers(original).get(key) == actor_id for key in task_scope), 'current task-scoped receiver required')
+        require(observation.get('recipient_agent_id') == actor_id, 'observe actual scoped receiver inbox')
+        packets = list(observation['inbox'].get('messages', [])) + [w['receipt'] for w in observation.get('workers', []) if w.get('receipt')]
+        require(all(p['task_id'] in task_scope for p in packets) and
+            all(w['task_id'] in task_scope for w in observation.get('workers', [])), 'observation outside task receiver scope')
     if original.get("delivery"):
         from delivery import actor_for
         actor_for(original, {"op": "drain", "actor_id": actor_id})
@@ -92,6 +100,26 @@ def closeout(original, observation, observation_ref, actor_id=None):
     require(observation["based_on_revision"] == original["revision"], "closeout observation revision stale")
     require(load_bound(observation_ref) == observation, "observation content differs from bound artifact")
     state, issues, consumed = copy.deepcopy(original), [], []
+    def receive(state, message, source=None):
+        if task_scope is None:
+            return transition(state, {"op": "receive", "receipt": message, "actor_id": actor_id})
+        from demand_routing import receive_observed
+        candidate = copy.deepcopy(state)
+        result = receive_observed(candidate, message, source or message['origin_observation'], actor_id)
+        return candidate, dict(receipt='quarantined' if result['receipt_status']=='unverified' else result['receipt_status'])
+
+    def drain(state):
+        if task_scope is None:
+            return transition(state, {"op": "drain", "actor_id": actor_id})[0]
+        arrivals = [r['payload'] for r in state['receipts'].values() if r['status'] in ('buffered', 'held')]
+        arrivals += [r['payload'] for r in state.get('unverified_receipts', {}).values() if r['status']=='unverified']
+        for packet in arrivals:
+            if packet['task_id'] in task_scope and packet.get('origin_mode')=='observed_terminal':
+                try:
+                    state, _ = receive(state, packet)
+                except ERRORS as error:
+                    issues.append('scoped receipt held: '+str(error))
+        return state
     inbox = observation["inbox"]
     require(inbox["mode"] in ("native_snapshot", "app_thread_snapshot", "fixture", "unavailable"), "unknown observation mode")
     if inbox["mode"] == "unavailable" or inbox.get("complete") is not True:
@@ -101,12 +129,12 @@ def closeout(original, observation, observation_ref, actor_id=None):
     # Consume messages already received before checking worker/report parity.
     for message in inbox.get("messages", []):
         try:
-            state, received = transition(state, {"op": "receive", "receipt": message, "actor_id": actor_id})
+            state, received = receive(state, message)
             if received["receipt"] != "quarantined":
                 consumed.append(message["event_id"])
         except ERRORS as error:
             issues.append("native message rejected: " + str(error))
-    state, _ = transition(state, {"op": "drain", "actor_id": actor_id})
+    state = drain(state)
     workers = observation.get("workers", [])
     require(len({w["task_id"] for w in workers}) == len(workers), "duplicate worker observations")
     by_task = {w["task_id"]: w for w in workers}
@@ -119,12 +147,12 @@ def closeout(original, observation, observation_ref, actor_id=None):
             message = worker["receipt"]
             require(worker["status"] in ("completed", "blocked") and message["task_id"] == worker["task_id"],
                     "terminal observation/receipt mismatch")
-            state, received = transition(state, {"op": "receive", "receipt": message, "actor_id": actor_id})
+            state, received = receive(state, message, worker['evidence'])
             if received["receipt"] != "quarantined":
                 consumed.append(message["event_id"])
         except ERRORS as error:
             issues.append("native terminal rejected: " + str(error))
-    state, _ = transition(state, {"op": "drain", "actor_id": actor_id})
+    state = drain(state)
     discoveries, current_issues = current_observation_issues(state, by_task)
     issues.extend(current_issues)
     # Held receipts, including active acceptance freezes, are visible reconciliation gaps.
@@ -139,6 +167,8 @@ def closeout(original, observation, observation_ref, actor_id=None):
     state["last_reconcile"] = {"revision": state["revision"], "observation": observation_ref,
         "observation_digest": fingerprint(observation), "mode": inbox["mode"], "issues": issues,
         "discoveries": discoveries, "consumed": consumed, "workers": by_task, "state_token": state_token(state)}
+    if task_scope is not None:
+        state['last_reconcile']['task_scope'] = list(task_scope)
     state["history"].append({"revision": state["revision"], "operation": {
         "op": "closeout", "observation": observation_ref, "issues": issues, "consumed": consumed}})
     validate(state)

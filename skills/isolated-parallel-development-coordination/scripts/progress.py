@@ -135,7 +135,7 @@ def task_row(state, task_id, members, observed):
         done = plan["completed_steps"]
         deployment = "冻结版本已部署并核验，后续主线变更不随发布" if done == plan["actions"] else \
                      "冻结版本已独立授权，下一步" + stages[plan["actions"][len(done)]]
-    return {"title": public_text(state, info.get("title", task_id)), "category": category, "stage": stage,
+    return {"task_id": task_id, "title": public_text(state, info.get("title", task_id)), "category": category, "stage": stage,
             "completed_facts": list(dict.fromkeys(facts)) or ["尚无已核实的阶段完成记录"],
             "next_step": public_text(state, info.get("next_step") or next_step), "deployment": deployment,
             "certainty": "last_recorded" if issues else "verified", "issues": issues}

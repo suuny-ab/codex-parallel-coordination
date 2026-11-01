@@ -19,7 +19,9 @@ commit、push、PR/MR、merge、安装、tag/发布、备份、部署、数据�
 
 Python 公共入口是 [CORE Runtime](core-runtime.md)；插件组合版需 Python 3.12+。Windows 核实实际解释器并加 `-B`。state-root 由受信安装 profile 固定，规范化项目根派生唯一 `ledger.json`，不能由消息另指目录。报告仅作指纹证据；RESOURCE 只存许可/资源事实，不另存任务队列或阶段。
 
-恢复先 `Runtime.recover()`（读同账本 show/summary），再 `Runtime.cycle()` 对账。低层 `coordination.py`/状态协议只用于兼容或离线诊断，不另初始化生产账本。恢复不重建空状态、不删历史或去重、不抢锁；损坏先保全，v1 迁移仅对副本写新路径并保留旧限制。
+已有账本的主会话/集成者在工作开始或结束统一用 [`Runtime.work_cycle` / CLI `work-cycle`](core-runtime.md#一轮工作入口)：主会话只读，当前授权集成者提交本轮观察或调用一次受信采集回调，复用收件/closeout，按同 revision 返回至多一项用户事项及开发/交付/清理摘要。无新观察只报最后登记，当前计数为 null；待清理不算所有工作结束。`Runtime.recover`/`cycle` 保留底层恢复/兼容用途，不覆盖统一入口。低层 `coordination.py`/状态协议只用于兼容或离线诊断，不另初始化生产账本。恢复不重建空状态、不删历史或去重、不抢锁；损坏先保全，v1 迁移仅对副本写新路径并保留旧限制。
+
+没有 global delivery 而已有真实派发绑定时，只由当前批准的任务收件者核本范围，可用 `task_ids=[...]` / 重复 `--task TASK` 限定已授权任务；该参数不能新授任务权，不能与全局委托混用。主会话同参数只筛责任摘要，不写技术状态；局部观察不证明其它任务当前覆盖或清理授权。缺采集能力走只读形式并明确下一责任，不让主会话冒用集成身份。
 
 ## 隔离与资源准入
 
