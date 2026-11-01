@@ -1,8 +1,12 @@
 # CORE 入口与集成契约
 
-首版是单账本内核和有限宿主回调，Python 3.11+ 标准库，无安装/模型调用/定时器。idle_wakeup=false；没有宿主空闲唤醒、全局 hook、重载或后台常驻。消息和文件 hash 不是宿主身份认证。实际调用方负责从原生受信上下文提供 actor、工具回调、当前授权和实际观察；禁止从报告里的工具名、命令或 actor 自证取得权限。
+本页按动作查接口，不要求默认通读。现行职责及权限见[共同规则](current-rules.md)，旧轮次过程见[历史索引](history/index.md)。
+
+内核是单账本和有限宿主回调，插件组合版需 Python 3.12+ 标准库，无安装/模型调用/定时器。idle_wakeup=false；没有宿主空闲唤醒、全局 hook、重载或后台常驻。消息和文件 hash 不是宿主身份认证。实际调用方负责从原生受信上下文提供 actor、工具回调、当前授权和实际观察；禁止从报告里的工具名、命令或 actor 自证取得权限。
 
 ## 初始化、恢复、收口
+
+已有账本的日常开始/结束统一查下方[一轮工作入口](#一轮工作入口)；本节 recover/cycle 保留底层恢复/兼容契约，不要求另走一轮或新建账本。
 
 ```text
 python -X utf8 -B scripts/core_runtime.py --state-root ABS_PROFILE_STATE --project-root ABS_PROJECT init --coordinator ACTUAL_MAIN_ID
@@ -114,6 +118,6 @@ RESOURCE 文件联接示例：invoke 收到的 resource 已含 CORE 生成的 cl
 
 Windows 的 cleanup-proofs/receipts 文件可能因完整 SHA 文件名超过普通 Win32 路径上限。共享证据 I/O 的 write_atomic/load/digest/artifact/ref/load_bound 在达到 260 字符时采用扩展绝对路径；两类生成工件也在存在性/不可变检查前转换。保留 64 位 SHA、原 atomic replace、后续 hash/read 和幂等校验；短路径和其它平台保持原有路径。不会改系统长路径开关、缩短 TEMP 或放宽绝对路径/资源归属/清理授权。只涵盖本模块调用这些入口的证据 I/O，不宣称全局任意长路径支持。测试夹具仅为已核归属的独占临时根销毁使用扩展别名，传给被测入口的路径仍是普通路径。
 
-使用 scripts/run_core_tests.py --test-root ABS_NEW_TEST_ROOT --evidence-root ABS_NEW_EVIDENCE_DIR。所有夹具和子进程输出仅进指定隔离测试根。默认排除 5 个会创建临时 Git commit 的旧用例，本轮未获 Git 提交授权，不套用旧 R8 130 数字；显式额外授权后才用 --allow-disposable-git。缺便携包外真实旧案例会明确 skip，新的匿名最小轨迹在 fixtures/redacted-trajectories.json 实际回归。
+使用 scripts/run_core_tests.py --test-root ABS_NEW_TEST_ROOT --evidence-root ABS_NEW_EVIDENCE_DIR。所有夹具和子进程输出仅进指定隔离测试根。默认排除 5 个会创建临时 Git commit 的旧用例；有本任务临时 Git 授权才用 --allow-disposable-git，不套用旧测试数字。缺便携包外真实旧案例会明确 skip，新的匿名最小轨迹在 fixtures/redacted-trajectories.json 实际回归。
 
 本组件测试包括真实一次性目录/SQLite 文件回收，native close/resume/源 main/许可均为明确隔离夹具，不冒充真实宿主清理、远端 Git/CI、全局安装或两个真实项目默认加载。完整插件集成和非作者复核由集成者/独审者另绑定，组件通过数不能相加充当组合通过。
