@@ -37,6 +37,8 @@ python -X utf8 -B tools/profile.py uninstall --profile C:/explicit-isolated-prof
 
 ## 运行逻辑改动时的回归入口
 
+轻量收件定向回归：`python -X utf8 -B -m unittest discover -s skills/isolated-parallel-development-coordination/scripts -p test_main_brief.py -v`。覆盖原完整结果对照、焦点/优先级、内部待办、合入与各资源状态、通知未确认恢复、来源变化、Unicode 详情和分页。均使用隔离账本及宿主夹具；真实项目大小/耗时须另取同一冻结输入测量并保留并发变化和范围限制。固定调用及兼容入口见[轻量收件](../skills/isolated-parallel-development-coordination/references/main-brief.md)。
+
 交付接续定向回归：`python -X utf8 -B -m unittest discover -s tests -p test_delivery_continuation.py -v`。CORE launch/cleanup 及保全接点变更另跑 CORE、相关 handoff/Node、dispatch 和 RESOURCE 组合回归；批次按 `tools/heavy.py` 的 `lease()` 互斥。该用例实际执行临时 Git/文件、本地许可、Node/Python、强退和固定恢复入口，native/安装/独审判断仍为夹具。真实任务经获批安装入口另验，不写 live 台账或造任务凑通过。
 
 任务交接修复的定向回归为 `python -X utf8 -B -m unittest discover -s tests -p test_handoff_faults.py -v`、`-p test_task_handoff.py` 及 `-p test_dispatch_queued_base.py`，另运行既有 dispatch/host/late、CORE 和组合检查。新增用例验证实际 Node/Python EOF退出及原锁释放、容量拒绝/unknown、原身份观察、报告门禁及重复/迟到恢复；纯排队重基线使用专属临时 Git/RESOURCE，覆盖原字节/身份不变、祖先/远端/归属拒绝、无 host 调用及追加时 revision 竞争；native 回复仍是 fixture。实际 host 的有限观察与最终收件需使用已获授权的既有任务，由受信宿主及集成者另核，不为验证另造任务或重复 spawn。

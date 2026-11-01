@@ -154,7 +154,10 @@ def project(state, *, current=False, reconciled=None, receiver_scope=None):
         limitation='Point-in-time coverage only; caller assertions are not host authentication. No automatic execution or cleanup.')
 
 
-def run(runtime, actor_id, *, observation_ref=None, collect=None, task_ids=None):
+def run(runtime, actor_id, *, observation_ref=None, collect=None, task_ids=None, view='full',
+        budget=8192, cursor=None, snapshot=None, detail=None):
+    from main_brief import options, pointer, render
+    options(view, budget, cursor, snapshot, detail, observation_ref is not None or collect is not None)
     require(isinstance(actor_id, str) and actor_id.strip(), 'actual nonempty caller identity required')
     state = runtime._load()  # Recover the existing project; never initialize/reset.
     delivery = state.get('delivery', {}).get('agent_id')
@@ -166,6 +169,27 @@ def run(runtime, actor_id, *, observation_ref=None, collect=None, task_ids=None)
     require(actor_id in (state['coordinator_id'], delivery) or actor_id in receivers.values(),
             'current main/delivery role or approved task receiver required')
     require(observation_ref is None or collect is None, 'provide observation or trusted collector, not both')
+
+    def output(state, current=False, reconciled=None, scope=None):
+        if view == 'full':
+            return dict(project(state, current=current, reconciled=reconciled, receiver_scope=scope),
+                        ledger=str(runtime.path), project_id=runtime.project_id)
+        replay = bool(cursor or snapshot)
+        if replay:
+            token, _, _ = pointer(cursor or snapshot)
+            current = token.startswith('c:')
+        # A replay may refer to an observed snapshot, never a fresh host observation.
+        # Rebuild the same canonical checks without consuming or acknowledging facts.
+        check = checkpoint(state)
+        if current:
+            audit = state.get('last_reconcile') or {}
+            require(audit.get('revision') == state['revision'], 'observed snapshot changed; refresh brief')
+            check.update(scope='reconciled_snapshot' if audit.get('mode') in ('native_snapshot', 'app_thread_snapshot') else
+                         'fixture_only' if audit.get('mode') == 'fixture' else 'incomplete_native_coverage',
+                         allow_end=not audit.get('issues') and check['allow_end'])
+        full = project(state, current=current, reconciled=check, receiver_scope=task_ids)
+        return render(state, full, actor_id=actor_id, task_ids=task_ids, budget=budget, cursor=cursor,
+                      snapshot=snapshot, detail=detail, replay=replay)
     if observation_ref is not None or collect is not None:
         scoped = not delivery and bool(receivers or state.get('runtime', {}).get('observed_dispatches'))
         scope = [key for key, owner in receivers.items() if owner == actor_id] if scoped else None
@@ -191,6 +215,5 @@ def run(runtime, actor_id, *, observation_ref=None, collect=None, task_ids=None)
                 state, result = closeout(state, load_bound(observation_ref), observation_ref,
                                         actor_id=actor_id, task_scope=scope)
                 write_atomic(runtime.path, state)
-                view = project(state, current=True, reconciled=result, receiver_scope=scope)
-                return dict(view, ledger=str(runtime.path), project_id=runtime.project_id)
-    return dict(project(state, receiver_scope=task_ids), ledger=str(runtime.path), project_id=runtime.project_id)
+                return output(state, current=True, reconciled=result, scope=scope)
+    return output(state, scope=task_ids)
