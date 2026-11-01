@@ -28,6 +28,8 @@ python -B tools/profile.py uninstall --profile C:/explicit-isolated-profile
 
 任务入口和恢复用法见 [CORE 运行说明](skills/isolated-parallel-development-coordination/references/core-runtime.md)，资源实例、策略和动作见 [RESOURCE API](docs/resource/API.md)。同一安装 profile 固定使用一个 state-root；项目账本由规范化项目根派生，不按消息临时切换状态目录。资源实例由多个项目明确共用，资源状态不会替代任务阶段。
 
+已有账本的开始/结束工作统一使用 [`work-cycle`](skills/isolated-parallel-development-coordination/references/core-runtime.md#一轮工作入口)：主会话只读，当前集成者有限收件核对，返回同 revision 的一项用户事项或下一责任及开发/交付/清理摘要。无新观察则保留最后登记；已完成但待清理不表示所有工作结束。入口复用原 cycle/closeout/progress，不自动执行、清理或后台轮询。
+
 在受信宿主代码中，`ResourceBridge.admit` 从真实 RESOURCE 许可生成 CORE admission；只有 granted 才调用已授权的宿主执行入口。`cleanup` 联接 CORE 的当前清理 intent 和 RESOURCE 实际回执，`reconcile_cleanup` 对账未知结果，`release_agent_quota` 只接受 CORE 已确认的关闭/未启动事实。桥接器不另存任务或资源账本，不提供 JSON 自授权。
 
 新开发任务登记为 `task_kind=code`；旧记录未声明时按代码任务保守处理。历史 read_only 任务保留 `acceptance_type=delivery_verified|user_required`，由 canonical 完成入口核验当前修订、确认依据、成果与源快照，不伪造 MR/CI。`prepare` 不再创建只读开发者。不能事后改任务类型、冒认旧 owner 或直接改完成状态来绕过门禁。

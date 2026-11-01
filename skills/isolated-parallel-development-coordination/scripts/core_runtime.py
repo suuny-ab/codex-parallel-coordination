@@ -322,6 +322,10 @@ class Runtime:
             write_atomic(self.path,state)
             return dict(result,summary=summary(state),ledger=str(self.path),idle_wakeup=False)
 
+    def work_cycle(self, actor_id, *, observation_ref=None, collect=None, task_ids=None):
+        from work_cycle import run
+        return run(self, actor_id, observation_ref=observation_ref, collect=collect, task_ids=task_ids)
+
     def receive(self, payload, actor_id):
         """Cross-channel duplicate facts retain the original canonical provenance."""
         with writer_lock(self.path):
@@ -620,11 +624,15 @@ def main():
     sub=p.add_subparsers(dest='command',required=True)
     init=sub.add_parser('init');init.add_argument('--coordinator',required=True);init.add_argument('--worker-capacity',type=int,default=4)
     sub.add_parser('recover');sub.add_parser('capabilities');sub.add_parser('routing-status')
+    work=sub.add_parser('work-cycle');work.add_argument('--actor',required=True);work.add_argument('--observation')
+    work.add_argument('--task',action='append',dest='task_ids')
     for name in ('apply','prepare','cycle','resolve-next','record-main','complete-read-only','routing','real-use'):
         cmd=sub.add_parser(name);cmd.add_argument('input');cmd.add_argument('--actor',required=True)
     args=p.parse_args();runtime=Runtime(args.state_root,args.project_root)
     if args.command=='init': result=runtime.initialize(args.coordinator,worker_capacity=args.worker_capacity)
     elif args.command=='recover':result=runtime.recover()
+    elif args.command=='work-cycle':result=runtime.work_cycle(args.actor,
+        observation_ref=ref(args.observation) if args.observation else None,task_ids=args.task_ids)
     elif args.command=='routing-status':result=runtime.routing_status()
     elif args.command=='capabilities':result=dict(idle_wakeup=False,callbacks_required_for_host_side_effects=True,global_install=False)
     elif args.command=='cycle':result=runtime.cycle(ref(args.input),args.actor)
