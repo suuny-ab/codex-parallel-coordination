@@ -477,6 +477,49 @@ class ArchiveTests(unittest.TestCase):
             self.assertEqual(check_guidance.check(files)['errors'],[])
         self.assertIn('skills/isolated-parallel-development-coordination/scripts/archive_tool.py',files)
 
+    def revise_confirmed_requirement(self, **changes):
+        previous=self.rt._load()['runtime']['intake']['requirements']['REQ-A']
+        fields={key:deepcopy(previous[key]) for key in
+                ('name','scope','acceptance','discussion','spec','check','start_reference')}
+        fields['deliverables']=deepcopy(previous.get('deliverables', []))
+        fields.update(changes)
+        return self.rt.routing(dict(op='spec',event_id='same-scope-spec-update',requirement_id='REQ-A',**fields),'main')
+
+    def test_completed_canonical_manifest_cannot_add_undeclared_deliverable(self):
+        self.use_routing=True;self.ready()
+        previous=deepcopy(self.rt._load()['runtime']['intake']['requirements']['REQ-A'])
+        extra=self.work/'undeclared-after-merge.bin';extra.write_bytes(b'not in confirmed empty manifest')
+        update=self.revise_confirmed_requirement(deliverables=[ref(extra)])
+        result=self.execute()
+        self.assertTrue(extra.exists(),'same-scope update moved an undeclared extra')
+        self.assertEqual(len(result['files']),1)
+        self.assertEqual(update['status'],'rejected',update)
+        record=self.rt._load()['runtime']['intake']['requirements']['REQ-A']
+        self.assertEqual(record['spec'],previous['spec']);self.assertEqual(record['deliverables'],[])
+
+    def test_completed_canonical_manifest_cannot_replace_spec_under_same_scope(self):
+        self.use_routing=True;self.ready()
+        previous=deepcopy(self.rt._load()['runtime']['intake']['requirements']['REQ-A'])
+        changed=self.materials/'unapproved-replacement.md';changed.write_text('different final spec bytes',encoding='utf-8')
+        check=self.materials/'unapproved-self-check.json'
+        check.write_text(json.dumps(dict(coordinator_id='main',requirement_id='REQ-A',spec=ref(changed),
+            discussion=previous['discussion'],result='consistent')),encoding='utf-8')
+        update=self.revise_confirmed_requirement(spec=ref(changed),check=ref(check))
+        result=self.execute()
+        self.assertTrue(changed.exists(),'same-scope update moved replacement spec')
+        self.assertEqual(update['status'],'rejected',update)
+        self.assertEqual(result['files'][0]['original'],self.original)
+
+    def test_identical_ended_spec_update_preserves_archived_locator_and_history(self):
+        self.use_routing=True;self.ready();self.assertEqual(self.execute()['status'],'completed')
+        before=deepcopy(self.rt._load()['runtime']['intake']['requirements']['REQ-A'])
+        update=self.revise_confirmed_requirement()
+        self.assertEqual(update['status'],'recorded',update)
+        after=self.rt._load()['runtime']['intake']['requirements']['REQ-A']
+        self.assertEqual(after,before)
+        self.assertEqual(ref(after['current_spec']['path']),after['current_spec'])
+        self.assertEqual(self.observe()['status'],'completed')
+
     def test_low_level_state_event_cannot_forge_archive(self):
         self.ready();before=self.rt.path.read_bytes()
         with self.assertRaises(ValueError):self.rt.task_state('author').record(dict(action='archive',task_id='A',event_id='forged',expected_revision=self.revision(),status='completed'))
