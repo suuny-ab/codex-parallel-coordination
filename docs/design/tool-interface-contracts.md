@@ -1,6 +1,6 @@
 # 工具接口与任务接续设计
 
-STATE-TOOL 实现说明：本 PR 提供职责受限的统一状态、源码绑定、技术交接及独立反馈登记，见[当前接口](../../skills/isolated-parallel-development-coordination/references/task-state.md)。ARCHIVE-TOOL 提供[明确清单原件归档入口](../../skills/isolated-parallel-development-coordination/references/archive-tool.md)，支持 A01—A05 的隔离验证及手动接手；RESOURCE-FLOW 资源创建/关闭准入仍待其独立实现。以下历史设计及验收目标不因此成为实际原生回收或完整闭环通过结论。
+STATE-TOOL 已提供职责受限的统一状态及反馈登记，见[当前接口](../../skills/isolated-parallel-development-coordination/references/task-state.md)。ARCHIVE-TOOL 已提供[明确清单原件归档入口](../../skills/isolated-parallel-development-coordination/references/archive-tool.md)。RESOURCE-FLOW 候选同步实际合入的 ARCHIVE 接口，见[资源入口与验证范围](../resource/resource-flow.md)。以下设计及隔离测试均不代表实际作者关闭、原生名额释放或本任务真实闭环通过。
 
 日期：2026-11-02。业务依据：[已逐项确认的架构及六步流程](plugin-module-architecture.md)。本地源码核对基线为 `4097bd8bb9deed4ab96bdf216b5a8a84ee75e627`；这是本次读取的本地提交，不是对当前云端或本机安装版本的核验。
 

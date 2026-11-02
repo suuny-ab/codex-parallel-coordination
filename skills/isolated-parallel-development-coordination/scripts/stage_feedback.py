@@ -43,7 +43,12 @@ def confirmed_close(state, key):
             try:
                 proof = operation.get('release_receipt') or operation['close_confirmation']
                 artifact(proof)
-                if not operation.get('release_receipt'):
+                if not operation.get('release_receipt') and load_bound(proof).get('schema')=='resource-close-confirmation/1':
+                    value=load_bound(proof)
+                    require(value.get('actual_result')==operation.get('actual_result') and
+                        value.get('operation_id')==operation['operation_id'] and
+                        load_bound(value['actual_result'])['result'].get('status')=='closed', 'actual close unconfirmed')
+                elif not operation.get('release_receipt'):
                     value = load_bound(proof)
                     require(all(value.get(field) == operation.get(field) for field in (
                         'project_id', 'task_id', 'operation_id', 'executor_id', 'generation', 'native_request', 'host_confirmation')) and

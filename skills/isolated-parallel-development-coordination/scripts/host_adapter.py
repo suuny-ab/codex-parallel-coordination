@@ -157,3 +157,40 @@ class HostAdapter:
         receipt_context(state, result)
         receipt_report(state, result)
         return result
+
+
+class ManagedCLIExitAdapter:
+    """Observe an original supervised CLI exit. No native tool or process termination.
+
+    observe_exit is supplied by the trusted manager/host, never by a JSON command.
+    It must obtain the original Job completion event and terminal thread log.
+    """
+    channel='codex_exec'
+
+    def __init__(self, runtime, task_id, actor_id, observe_exit, *, scope='host_verified'):
+        require(callable(observe_exit) and scope in ('host_verified','fixture_only'), 'trusted original CLI exit observer required')
+        self.runtime,self.task_id,self.actor_id,self.observe_exit,self.scope=runtime,task_id,actor_id,observe_exit,scope
+
+    def capabilities(self):
+        return dict(channel=self.channel,close=True,spawn=False,resume=False,existing_message=False,observation=True,idle_wakeup=False)
+
+    def call(self, operation, *, target=None, authorized=False):
+        from evidence import load_bound,ref
+        from real_use_closeout import cli_log
+        require(operation=='close' and authorized is True, 'CLI adapter only observes authorized exit')
+        state=self.runtime._load();self.runtime._resource_actor(state,self.actor_id,self.task_id);self.runtime._scope(state,self.task_id)
+        task=state['tasks'][self.task_id];command=task['cli_dispatch']['command'];launch=load_bound(command['launch'])
+        require(target==task['owner_agent_id']==launch['thread_id'] and launch.get('backend')=='codex_exec', 'actual CLI target differs')
+        facts=self.observe_exit(dict(launch))
+        require(facts.get('thread_id')==target and facts.get('job_name')==launch['job_name'], 'original supervised CLI identity differs')
+        created=load_bound(ref(launch['created_receipt_path']))
+        require(all(facts.get('process_identity',{}).get(k)==created['identity'][k] for k in ('pid','created')),
+                'original PID creation identity differs')
+        raw=load_bound(facts['exit_evidence'])
+        terminal,_=cli_log(facts['thread_log'],target)
+        confirmed=(raw.get('tree_empty') is True and raw.get('completion_event')=='JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO' and
+            any(all(member.get(k)==created['identity'][k] for k in ('pid','created')) for member in raw.get('members',[])) and
+            terminal in ('completed','failed'))
+        return dict(status='closed' if confirmed else 'unknown',channel='codex_exec',origin='independent_codex_process',
+            independent_process_tree_closed=confirmed,native_operation_executed=False,platform_capacity_count_known=False,
+            exit_evidence=facts['exit_evidence'],thread_log=facts['thread_log'])

@@ -486,10 +486,11 @@ class DispatchStartupRecoveryTests(unittest.TestCase):
 import sys,os
 sys.path.insert(0,SCRIPTS);sys.path.insert(0,SOURCE)
 import standard_dispatch
-original=standard_dispatch.StandardDispatch._register
-def die(self,*args):
-    original(self,*args);os._exit(72)
-standard_dispatch.StandardDispatch._register=die
+from codex_parallel_coordination.bridge import ResourceBridge
+original=ResourceBridge.observe_worktree_creation
+def die(self,*args,**kwargs):
+    original(self,*args,**kwargs);os._exit(72)
+ResourceBridge.observe_worktree_creation=die
 standard_dispatch.main()
 """.replace('SCRIPTS',repr(str(ROOT/'skills/isolated-parallel-development-coordination/scripts'))).replace('SOURCE',repr(str(ROOT/'src')))
         child=subprocess.run([sys.executable,'-X','utf8','-B','-c',code],input=json.dumps(bootstrap)+'\n',

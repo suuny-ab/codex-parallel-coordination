@@ -70,5 +70,36 @@
       "sha256": "f0f7622f351daf4166ccbc6a7f5b8eeb13044c1418bba0baa1ac768a25157d1d"
     }
   ],
-  "test_inheritance": "none; final combination requires fresh current-source campaign"
+  "test_inheritance": "none; final combination requires fresh current-source campaign",
+  "amendments": [
+    {
+      "task_id": "RESOURCE-FLOW_BASELINE_OBSERVATION",
+      "base_main": "a5be31c9b37ba64099cbea51261e6347db2b8bb9",
+      "scope": "Read-only observation of accepted main source predating RESOURCE-FLOW. Original R4 freeze/report remains unchanged; no historical test result is upgraded.",
+      "files": [
+        {
+          "path": "src/codex_parallel_coordination/resources/support.py",
+          "previous_sha256": "f909dd38f10d99e2ca547aa05fa5588b782cb0338a9d2dce6b12d04d486dac23",
+          "sha256": "3df641845a3baef1aeca34b2c9b59ec610cce8db7d30dc1f83a63650624c28fb"
+        }
+      ]
+    },
+    {
+      "task_id": "RESOURCE-FLOW",
+      "base_main": "a5be31c9b37ba64099cbea51261e6347db2b8bb9",
+      "scope": "Independent canonical author release and never-started task queue cancellation; old gates remain the default.",
+      "files": [
+        {
+          "path": "src/codex_parallel_coordination/resources/resources.py",
+          "previous_sha256": "2fe0c116416474ccf87cc20ad893dd0a4f49164b5258f7c7d7402dc943b8b43c",
+          "sha256": "18c244a0332b28e1d1cb267720ca01e592bb3404be8f1773c60b1de405903ce1"
+        },
+        {
+          "path": "src/codex_parallel_coordination/resources/support.py",
+          "previous_sha256": "3df641845a3baef1aeca34b2c9b59ec610cce8db7d30dc1f83a63650624c28fb",
+          "sha256": "36f62c8dc2c1ca2b00bd7e71723770dc7f6213aa9620da7382f0ee0d0a0fcf70"
+        }
+      ]
+    }
+  ]
 }

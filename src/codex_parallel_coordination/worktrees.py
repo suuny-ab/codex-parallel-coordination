@@ -142,3 +142,50 @@ class GitWorktrees:
         except subprocess.CalledProcessError:
             return {"status": "unknown", "reason": "Git action failed; observe actual state before retry",
                     "resource_id": record["resource_id"]}
+
+    def remove_cancelled(self, record, expected_identity):
+        """Caller verified explicit cancellation and author stop; discard only this tree."""
+        target=self._target(record);observed=self.observe(record)
+        if not observed['exists']:return dict(status='removed')
+        if observed['identity']!=expected_identity or record.get('protected') or record.get('references'):
+            return dict(status='failed_no_change',reason='cancelled tree identity/protection changed')
+        for parent,directories,files in os.walk(target,followlinks=False):
+            if any((Path(parent)/name).is_symlink() or (Path(parent)/name).is_junction() for name in directories+files):
+                return dict(status='failed_no_change',reason='linked cancelled tree content protected')
+        match=next(e for e in self._entries() if Path(e['worktree']).resolve()==target)
+        if 'locked' in match:return dict(status='failed_no_change',reason='locked worktree protected')
+        try:
+            self._git('worktree','remove','--force','--',str(target))
+            return dict(status='removed')
+        except (subprocess.SubprocessError,OSError):
+            return dict(status='unknown',reason='observe original cancelled worktree before further action')
+
+    def branch_head(self, branch, *, remote=False):
+        if not branch.startswith('codex/') or branch=='codex/':raise ValueError('dedicated task branch required')
+        ref='refs/heads/'+branch
+        if remote:
+            rows=self._git('ls-remote','origin',ref).stdout.decode('ascii').strip().splitlines()
+            if not rows:return None
+            fields=rows[0].split()
+            if len(rows)!=1 or len(fields)!=2 or fields[1]!=ref:raise ValueError('exact remote branch required')
+            return fields[0]
+        entries=self._git('for-each-ref','--format=%(objectname)',ref).stdout.decode('ascii').strip().splitlines()
+        if not entries:return None
+        if len(entries)!=1:raise ValueError('exact local branch required')
+        return entries[0]
+
+    def remove_branch(self, branch, expected_head, *, remote=False, cancelled=False, main_branch='main'):
+        if branch==main_branch:raise ValueError('main branch protected')
+        observed=self.branch_head(branch,remote=remote)
+        if observed is None:return dict(status='removed')
+        if observed!=expected_head:return dict(status='failed_no_change',reason='branch head changed')
+        if not remote and any(e.get('branch')=='refs/heads/'+branch for e in self._entries()):
+            return dict(status='failed_no_change',reason='branch still checked out')
+        if not cancelled and self._git('merge-base',expected_head,'refs/heads/'+main_branch).stdout.decode().strip()!=expected_head:
+            return dict(status='failed_no_change',reason='main does not contain task branch')
+        try:
+            if remote:
+                self._git('push','--force-with-lease=refs/heads/'+branch+':'+expected_head,'origin',':refs/heads/'+branch)
+            else:self._git('update-ref','-d','refs/heads/'+branch,expected_head)
+            return dict(status='removed' if self.branch_head(branch,remote=remote) is None else 'unknown')
+        except (subprocess.SubprocessError,OSError):return dict(status='unknown',reason='observe original branch deletion result')

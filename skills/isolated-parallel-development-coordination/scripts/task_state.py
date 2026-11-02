@@ -424,7 +424,7 @@ class TaskState:
 _DISPATCH, _RESOURCE, _ARCHIVE = object(), object(), object()
 
 
-def record_producer_result(state, capability, task_id, operation_id, result):
+def record_producer_result(state, capability, task_id, operation_id, result, *, notify_result=False):
     """Stable internal registration seam for the actual producer's verified result.
 
     Called in its existing transaction, after producer checks. It performs no
@@ -443,7 +443,7 @@ def record_producer_result(state, capability, task_id, operation_id, result):
     row = dict(producer=names[capability], operation_id=operation_id, result=deepcopy(result),
                recorded_at=now(), ledger_revision=state['revision'])
     records[identity] = row
-    if task.get('state_contract'):
+    if task.get('state_contract') or notify_result:
         notify(state, task_id, names[capability], names[capability]+'：结果已登记', state['coordinator_id'], result, recorded_revision=state['revision'])
     return deepcopy(row)
 
@@ -456,7 +456,11 @@ def capture_producer_result(state, operation):
     if key not in state['tasks']:
         return
     name = operation['op']; task = state['tasks'][key]
-    if name in ('launch-outcome', 'launch-accepted', 'reconcile-launch', 'bind-observed-dispatch', 'bind-executor'):
+    if name=='agent-permit-result':
+        record_producer_result(state,_RESOURCE,key,operation['operation_id'],dict(agent_permits=deepcopy(task['resource_permits'])),notify_result=True)
+    elif name=='resource-flow':
+        record_producer_result(state,_RESOURCE,key,operation['operation_id'],deepcopy(original),notify_result=True)
+    elif name in ('launch-outcome', 'launch-accepted', 'reconcile-launch', 'bind-observed-dispatch', 'bind-executor'):
         record_producer_result(state, _DISPATCH, key, operation.get('attempt_id') or operation.get('operation_id') or name,
             {k: deepcopy(task.get(k)) for k in ('owner_agent_id', 'worktree', 'branch', 'worker_run')})
     elif name=='task-state' and operation.get('action')=='archive':
@@ -465,7 +469,8 @@ def capture_producer_result(state, operation):
                   'cleanup-round', 'reconcile-cleanup-callback-results', 'aggregate-confirmed-agent-close', 'reconcile-close', 'release-receipt'):
         record_producer_result(state, _RESOURCE, key, operation.get('operation_id') or operation.get('resource_id') or name,
             dict(resources=[deepcopy(r) for r in state['runtime'].get('resources', {}).values() if r['task_id']==key],
-                 cleanup=deepcopy(task.get('cleanup'))))
+                 cleanup=deepcopy(task.get('cleanup'))),notify_result=task.get('resource_contract')=='new-task/1' or
+                 original.get('operation')=='close' and original.get('preservation') is None)
 
 
 def archive_manifest(state, task_id):

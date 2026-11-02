@@ -1,4 +1,4 @@
-"""Replay frozen resource tests against an exact copy of the integrated source."""
+"""Replay frozen resource tests against bound source and explicit additive amendments."""
 import argparse
 import hashlib
 import json
@@ -17,6 +17,12 @@ def replay(output):
     provenance = json.loads((ROOT / "provenance/resource.json").read_text(encoding="utf-8"))
     prefix = "src/codex_parallel_coordination/resources/"
     expected = {row["path"][len(prefix):]: row["sha256"] for row in provenance["files"] if row["path"].startswith(prefix)}
+    for amendment in provenance.get('amendments', []):
+        for row in amendment['files']:
+            if not row['path'].startswith(prefix):raise ValueError('amendment outside resource source')
+            name=row['path'][len(prefix):]
+            if expected.get(name)!=row['previous_sha256']:raise ValueError('amendment does not continue frozen source')
+            expected[name]=row['sha256']
     actual = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in source.glob("*.py")}
     if actual != expected:
         raise ValueError("integrated resource source differs from bound freeze")

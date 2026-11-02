@@ -44,9 +44,12 @@ class Controller:
         for request in state['requests'].values():
             phase_keys(policy, request['spec'])
             require(request['spec_digest'] == fingerprint(request['spec']), 'stored request content changed; reconcile')
-            require(request['status'] in ('queued', 'starting', 'running', 'idle', 'launch_unknown', 'completed', 'failed', 'reclaimed', 'recovered_exit'),
+            require(request['status'] in ('queued', 'starting', 'running', 'idle', 'launch_unknown', 'completed', 'failed', 'reclaimed', 'recovered_exit', 'cancelled'),
                     'unknown resource lifecycle state')
-            if request['status'] != 'queued':
+            if request['status']=='cancelled':
+                require(request.get('cancellation_proof') and not request.get('process') and not request.get('job_name'),
+                        'cancelled queue entry must never have acquired a process')
+            if request['status'] not in ('queued','cancelled'):
                 require(text(request.get('nonce')) and request.get('job_name') == 'Local\\CoordinationPlugin-' + request['nonce'],
                         'execution/Job identity missing or changed')
         return state, policy
@@ -346,6 +349,27 @@ class Controller:
             self.save(state, 'task_completed_process_cleanup_requested', request_id=key)
             return dict(result, whole_tree_exit_confirmed=False, task_completed_changed=False)
 
+    def cancel_queued(self, key, project, task, proof_ref, verifier=None, *, resource_class=None):
+        """Cancel an original never-started request; no process/permit is invented."""
+        with self.transaction():
+            state,_=self.read()
+            require(resource_class in (None,'agent_execution_slot'), 'known queued resource class required')
+            table='capacity_requests' if resource_class else 'requests'
+            request=state[table][key];spec=request['spec']
+            require(resource_class or spec.get('resource_kind')!='shared_tool', 'shared queued tool protected')
+            require((spec['project_id'],spec['task_id'])==(project,task), 'another task owns queued request')
+            if request['status']=='cancelled':
+                require(request.get('cancellation_proof')==proof_ref, 'original queued cancellation differs')
+                return dict(status='cancelled_not_started',duplicate=True)
+            require(request['status']=='queued' and not request.get('process') and not request.get('job_name') and not request.get('permit_id') and callable(verifier),
+                    'only the original never-started queue entry can be cancelled')
+            facts=verifier(copy.deepcopy(spec),proof_ref)
+            require(isinstance(facts,dict) and facts.get('verified') is True and facts.get('task_cancelled_verified') is True and
+                    facts.get('never_started') is True, 'canonical stopped task cancellation required')
+            request.update(status='cancelled',cancellation_proof=proof_ref)
+            self.save(state,'queued_task_cancelled_without_process',request_id=key)
+            return dict(status='cancelled_not_started',process_created=False)
+
     def model_capacity(self, source):
         value = load_bound(source)
         require(value['category'] == 'model_capacity' and text(value.get('model')) and text(value.get('event_id')), 'explicit model event required')
@@ -480,7 +504,7 @@ class Controller:
             require(isinstance(verified, dict) and verified.get('verified') is True,
                     'canonical verification required; old boolean-only cleanup draft withdrawn')
             if receipt['outcome'] == 'confirmed_closed':
-                cleanup_verified(verified)
+                cleanup_verified(verified,preservation_required=verified.get('guard_contract')!='agent-release/1')
             else:
                 require(verified.get('not_started') is True, 'unused reservation must be confirmed never started')
             request.update(status='released', release_receipt=receipt_ref)

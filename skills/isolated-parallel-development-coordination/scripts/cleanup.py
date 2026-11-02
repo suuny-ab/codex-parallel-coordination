@@ -7,7 +7,7 @@ from coordination import writer_lock
 from evidence import artifact, callback_result, load_bound, require, write_atomic, fingerprint, ref, io_path
 from task_completion import definition, verified, preservation_completion, completion_flags
 
-KINDS={'agent','process','worktree','database','environment','artifact'}
+KINDS={'agent','process','worktree','database','environment','artifact','local_branch','remote_branch'}
 
 
 def canonical_path(path):
@@ -28,6 +28,11 @@ def register(runtime, task_id, resource, authority_ref, actor_id):
         path=canonical_path(resource['path']) if resource.get('path') else None
         if resource['kind'] in ('worktree','database','environment','artifact'):
             require(path and path!=root and path.is_relative_to(root),'resource path outside managed cleanup root')
+        elif resource['kind'] in ('local_branch','remote_branch'):
+            task=state['tasks'][task_id]
+            require(resource.get('branch')==task['branch'] and resource['branch'].startswith('codex/') and
+                    resource['branch']!=state['project']['main_branch'] and resource.get('expected_head'),
+                    'exact dedicated task branch required')
         else:
             require(resource.get('executor_id') if resource['kind']=='agent' else resource.get('process_identity'),
                     'exact registered executor/process identity required')

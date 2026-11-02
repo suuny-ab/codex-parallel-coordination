@@ -18,10 +18,12 @@ def text(value):
     return isinstance(value, str) and bool(value.strip())
 
 
-def cleanup_verified(facts):
-    require(isinstance(facts, dict) and all(facts.get(k) is True for k in (
-        'verified', 'preservation_valid', 'no_active_work', 'no_active_descendants',
-        'no_release_dependencies', 'exclusive_task_resource', 'cleanup_authorized')) and facts.get('protected') is False,
+def cleanup_verified(facts, *, preservation_required=True):
+    fields=('verified', 'no_active_work', 'no_active_descendants',
+        'no_release_dependencies', 'exclusive_task_resource', 'cleanup_authorized')
+    if preservation_required: fields+=('preservation_valid',)
+    else: require(facts.get('guard_contract')=='agent-release/1', 'independent canonical agent guard required')
+    require(isinstance(facts, dict) and all(facts.get(k) is True for k in fields) and facts.get('protected') is False,
         'cleanup requires canonical handoff, exclusive ownership and authority; pending_cleanup')
     if 'task_kind' not in facts:  # Legacy CORE facts have only the code/main completion gate.
         completed = facts.get('task_completed_on_main') is True

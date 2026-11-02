@@ -14,7 +14,7 @@ from evidence import (artifact, fingerprint, git, io_path, load_bound, pack, ref
 SOURCE = 'direct user message in original main conversation'
 
 
-def approval(state, key, reference, actor):
+def approval(state, key, reference, actor, *, start_ref=None):
     task = state['tasks'][key]
     value = load_bound(reference)
     require(value.get('schema') == 'approved-dispatch-plan/1' and value.get('approval') == 'approved' and
@@ -24,8 +24,19 @@ def approval(state, key, reference, actor):
     matches = [t for t in value.get('tasks', []) if t.get('id') == key]
     require(len(matches) == 1 and Path(matches[0].get('worktree', task['worktree'])).resolve() == Path(task['worktree']).resolve() and
         matches[0].get('branch', task['branch']) == task['branch'], 'approved task/worktree/branch differs')
-    require(task.get('requirements') and Path(task['requirements']['user_reference']).resolve() ==
-        Path(reference['path']).resolve(), 'task must retain its original dispatch approval')
+    require(task.get('requirements'), 'confirmed requirements required')
+    if Path(task['requirements']['user_reference']).resolve()!=Path(reference['path']).resolve():
+        require(task.get('resource_authority')==reference and task.get('routing'), 'original task approval differs')
+        if start_ref is None and task.get('cli_dispatch',{}).get('command',{}).get('backend_authority'):
+            start_ref=load_bound(task['cli_dispatch']['command']['backend_authority']).get('previous_scope')
+        require(start_ref and Path(start_ref['path']).resolve()==Path(task['requirements']['user_reference']).resolve() and
+            task.get('start_reference')==task['requirements']['user_reference'], 'current task start differs')
+        started=start_ref
+        continuation=load_bound(started)
+        require(continuation.get('batch_approval')==reference and key in continuation.get('approved_next_tasks',[]) and
+            continuation.get('main_conversation')==state['coordinator_id'] and
+            continuation.get('source')=='current direct user message in original main chat',
+            'current start must retain the exact original approved batch')
     require(actor == value.get('integration_agent') and actor not in (state['coordinator_id'], task['owner_agent_id']),
         'approved independent integration reviewer required')
     delegation = state.get('delivery')
@@ -143,18 +154,31 @@ def cli_binding(state, key, command):
     task = state['tasks'][key]
     launch = load_bound(command['launch'])
     identity = command['thread_id']
-    require(launch.get('task_id') == key and launch.get('transport') == 'codex_exec_child_process' and
-        launch.get('native_agent_id') is None and type(launch.get('pid')) is int and launch['pid'] > 0 and
-        Path(launch['worktree']).resolve() == Path(task['worktree']).resolve() and launch['branch'] == task['branch'] and
-        Path(launch['authority']).resolve() == Path(command['approval']['path']).resolve() and
-        Path(launch['stdout']).resolve() == Path(command['launch_log']['path']).resolve(), 'original CLI dispatch differs')
+    if launch.get('schema')=='observed-managed-codex-exec-launch/1':
+        require(launch.get('backend')=='codex_exec' and launch.get('origin_mode')=='observed_codex_exec' and
+            launch.get('thread_id')==identity and launch.get('job_name') and launch.get('admission') and
+            launch.get('authority')==command.get('backend_authority'), 'actual managed CLI launch/grant differs')
+        process=launch['process_identity']
+        require(type(process.get('pid')) is int and process['pid']>0 and process.get('created') and
+            Path(launch['stdout_path']).resolve()==Path(command['launch_log']['path']).resolve(),
+            'actual managed CLI process/log differs')
+    else:
+        require(launch.get('transport')=='codex_exec_child_process' and launch.get('native_agent_id') is None and
+            type(launch.get('pid')) is int and launch['pid']>0 and
+            Path(launch['authority']).resolve()==Path(command['approval']['path']).resolve() and
+            Path(launch['stdout']).resolve()==Path(command['launch_log']['path']).resolve(), 'original CLI dispatch differs')
+    require(launch.get('task_id')==key and Path(launch['worktree']).resolve()==Path(task['worktree']).resolve() and
+            launch['branch']==task['branch'], 'original CLI task/worktree/branch differs')
     cli_log(command['launch_log'], identity)
     plan = load_bound(command['approval'])
     approved_task = next(t for t in plan['tasks'] if t['id'] == key)
     for name in ('spec', 'checklist'):
-        if approved_task.get(name) or plan.get('specs'):
+        if approved_task.get(name) or name=='spec' and plan.get('specs'):
             captured = command['approved_inputs'][name]
             artifact(captured)
+            if name=='spec' and task.get('routing'):
+                from demand_routing import current_requirement
+                require(captured==current_requirement(state,task['routing']['requirement_id'])['spec'], 'original task spec differs')
             require(Path(captured['path']).name == Path(approved_task.get(name, captured['path'])).name and any(
                 r['sha256'] == captured['sha256'] and Path(r['path']).name == Path(captured['path']).name
                 for r in plan['specs']), 'CLI dispatch document differs from approved bytes')
@@ -339,39 +363,122 @@ def merged(state, key, command, actor):
     return expected
 
 
-def apply(runtime, command, actor):
+def backend_approval(state, key, command, user_origin):
+    """Validate the exact backend scope before any host observation or write."""
+    reference=command.get('backend_authority');task=state['tasks'][key]
+    require(reference and user_origin and user_origin.get('role')=='user' and
+        user_origin.get('conversation_id')==state['coordinator_id'] and
+        user_origin.get('reference')==reference, 'actual original user backend grant required')
+    grant=load_bound(reference)
+    require(isinstance(grant,dict) and grant.get('source')==SOURCE and
+        grant.get('main_conversation')==state['coordinator_id'] and
+        isinstance(grant.get('quote'),str) and grant['quote'].strip() and
+        grant.get('task_id')==key and grant.get('backend')=='codex_exec' and
+        grant.get('branch')==task['branch'] and isinstance(grant.get('worktree'),str) and
+        Path(grant['worktree']).is_absolute() and
+        Path(grant['worktree']).resolve()==Path(task['worktree']).resolve(),
+        'backend approval task/backend/worktree/branch or original-main scope differs')
+    started=grant.get('previous_scope')
+    if started is not None:
+        require(isinstance(started,dict) and isinstance(started.get('path'),str) and
+            Path(started['path']).is_absolute() and
+            Path(started['path']).resolve()==Path(task['requirements']['user_reference']).resolve(),
+            'backend approval continuation scope differs')
+        load_bound(started)
+    return started
+
+
+def apply(runtime, command, actor, *, user_origin=None, observe_cli=None):
     from coordination import writer_lock, admit_receipt, consume, receipt_context, receipt_report
     key, action = command['task_id'], command['action']
     require(action in ('bind-cli', 'receive-cli', 'quality', 'technical-acceptance', 'record-merge'), 'unknown real-use action')
+    actual_cli = None
+    backend_start=None
+    before=runtime._load()
+    backend_required=action=='bind-cli' and not before['tasks'][key].get('cli_dispatch') and (
+        command.get('backend_authority') or load_bound(command['launch']).get('schema')=='observed-managed-codex-exec-launch/1')
+    if backend_required:backend_start=backend_approval(before,key,command,user_origin)
+    if action=='bind-cli' and not before['tasks'][key].get('cli_dispatch') and callable(observe_cli):
+        approval(before,key,command['approval'],actor,start_ref=backend_start)
+        actual_cli=observe_cli(deepcopy(command))
     with writer_lock(runtime.path):
         state = runtime._load(); task = state['tasks'][key]
-        approval(state, key, command['approval'], actor)
+        if backend_required:
+            require(backend_approval(state,key,command,user_origin)==backend_start, 'backend continuation scope changed')
+        approval(state, key, command['approval'], actor,start_ref=backend_start)
         original = deepcopy(state)
         if action == 'bind-cli':
             command = deepcopy(command); command.setdefault('launch_log', command['log'])
             outcome, _ = cli_binding(state, key, command)
             previous = task.get('cli_dispatch')
             if previous:
-                require(previous['command'] == command, 'CLI dispatch cannot be replaced')
+                require({k:v for k,v in previous['command'].items() if k!='backend_observation'} == command, 'CLI dispatch cannot be replaced')
                 return dict(duplicate=True, revision=state['revision'])
             identity = command['thread_id']
+            launch=load_bound(command['launch'])
+            managed=launch.get('schema')=='observed-managed-codex-exec-launch/1'
+            if managed:
+                require(user_origin and user_origin.get('role')=='user' and
+                    user_origin.get('conversation_id')==state['coordinator_id'] and
+                    user_origin.get('reference')==command.get('backend_authority') and actual_cli,
+                    'actual original user backend grant and process observation required')
+                permit=load_bound(launch['admission'])
+                require(permit.get('project_id')==runtime.project_id and permit.get('task_id')==key and
+                    permit.get('attempt_id')==launch.get('attempt_id') and permit.get('status')=='granted' and
+                    actual_cli.get('admission')==launch['admission'] and actual_cli.get('admission_context')=={
+                        k:permit[k] for k in ('project_id','task_id','request_id','permit_id','attempt_id','launch_identity')},
+                    'actual current CLI admission differs')
             require(task['owner_agent_id'] is None and task['phase'] == 'backlog' and task['worker_run']['status'] == 'queued' and
                 not any(t['owner_agent_id'] == identity for t in state['tasks'].values()) and
                 identity not in state['runtime']['executors'] and identity not in (state['coordinator_id'], actor),
                 'only the approved unowned queued task can adopt this CLI author')
-            require(not any(o.get('task_id') == key for o in state['runtime']['operations'].values()),
-                'reconcile existing host effects before CLI adoption')
+            existing = {oid:o for oid,o in state['runtime']['operations'].items() if o.get('task_id') == key}
+            if existing:
+                # An additional backend grant is trusted sideband, never JSON self-authorization.
+                require(user_origin and user_origin.get('role') == 'user' and
+                    user_origin.get('conversation_id') == state['coordinator_id'] and
+                    user_origin.get('reference') == command.get('backend_authority') and callable(observe_cli),
+                    'reconcile existing host effects; actual user backend grant and CLI observer required')
+                artifact(command['backend_authority'])
+                launches = [o for o in existing.values() if o.get('operation') in ('spawn','send')]
+                require(launches and all(o.get('operation')=='spawn' and o.get('status') in ('capacity','unsupported','not_started') and
+                    not o.get('executor_id') and not o.get('target_id') for o in launches) and
+                    not any(o.get('operation') in ('close','resume','codex_exec') for o in existing.values()),
+                    'unknown or actual prior author cannot switch backend')
+                require(command.get('prior_operation_id') in existing and existing[command['prior_operation_id']] in launches,
+                        'exact original failed native operation required')
+                actual = actual_cli
+                launch = load_bound(command['launch'])
+                require(actual.get('thread_id') == identity and actual.get('pid') == launch.get('pid',launch.get('process_identity',{}).get('pid')) and
+                        actual.get('worktree') == task['worktree'] and actual.get('backend') == 'codex_exec' and
+                        actual.get('job_name') and actual.get('job_name')==launch.get('job_name',actual.get('job_name')) and
+                        actual.get('origin') == 'independent_codex_process',
+                        'actual supervised CLI process/thread identity differs')
+                command['backend_observation'] = deepcopy(actual)
             state['runtime']['executors'][identity] = dict(id=identity, generation=1, lease='open',
-                routes={'codex_exec': dict(host_id='local', target_id=identity)}, origin='codex_exec_child_process',
+                routes={'codex_exec': dict(host_id='local', target_id=identity)},
+                origin='independent_codex_process' if managed else 'codex_exec_child_process',
                 authority=command['approval'], observation=None, execution=outcome, pending_work=None, active_children=None)
             task.update(owner_agent_id=identity, phase='developing', implementation='running' if outcome == 'running' else 'pending',
                 cli_dispatch=dict(command=command, reviewer_id=actor, admission_reconstructed=False))
+            if managed:
+                attempt=launch['attempt_id']
+                require(attempt not in state['runtime']['operations'], 'actual CLI operation identity already belongs elsewhere')
+                state['runtime']['operations'][attempt]=dict(operation='codex_exec',task_id=key,attempt_id=attempt,
+                    request_id=permit['request_id'],permit_id=permit['permit_id'],launch_identity=permit['launch_identity'],
+                    admission=launch['admission'],executor_id=identity,generation=1,status=outcome,
+                    channel='codex_exec',origin='independent_codex_process',launch=command['launch'],
+                    prior_native_operation=command.get('prior_operation_id'))
+                task['worker_run']['attempt_id']=attempt
+            if task.get('resource_contract')=='new-task/1':
+                from resource_lifecycle import agent
+                agent(state,key,command['approval'])
             task['worker_run'].update(owner_agent_id=identity, status='running' if outcome == 'running' else
                 ('awaiting_receipt' if outcome in ('completed', 'failed') else 'unknown'), reason='Actual CLI process/thread observed; author receipt required')
             if outcome in ('unknown', 'failed'):
                 task['blocker'] = dict(category='evidence', owner=actor,
                     reason='Actual CLI outcome '+outcome+'; preserve context and obtain a verified author report')
-            result = dict(status='bound', origin='codex_exec_child_process', admission_reconstructed=False)
+            result = dict(status='bound', origin='independent_codex_process' if managed else 'codex_exec_child_process', admission_reconstructed=False)
         elif action == 'receive-cli':
             report = imported_report(state, key, command['report'])
             if report.get('imported_author_report'):

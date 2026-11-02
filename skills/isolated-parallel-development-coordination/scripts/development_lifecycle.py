@@ -64,6 +64,16 @@ def cancellation_fields(task):
 
 def cancelled(state, task_id, scope=None):
     task = state['tasks'][task_id]; record = task.get('cancellation') or {}
+    if record.get('mode')=='resource-flow/1':
+        operation=state['runtime']['operations'][record['flow_operation']]
+        require(task['phase']=='cancelled' and not task.get('merge') and task.get('cancellation_request') and
+                record['binding']==cancellation_fields(task) and operation.get('operation')=='cancel-stop-verified' and
+                operation.get('task_id')==task_id and operation.get('status')=='cancelled' and
+                operation.get('actual_result')==record['proof'] and record.get('scope') in ('host_verified','fixture_only') and
+                (scope is None or record['scope']==scope), 'current stopped cancellation required')
+        # A shallow producer result, never abandoned code or a preservation graph.
+        artifact(record['proof'])
+        return record
     proof = load_bound(record['proof'])
     require(task['phase'] == 'cancelled' and not task.get('merge') and
             proof.get('project_id') == state['project']['id'] and proof.get('task_id') == task_id and

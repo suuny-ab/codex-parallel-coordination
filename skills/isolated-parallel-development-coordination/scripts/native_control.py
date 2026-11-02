@@ -9,7 +9,7 @@ CLOSE = 'multi_agent_v1__close_agent'
 WAIT = 'multi_agent_v1__wait_agent'
 
 
-def registered(state, task_id):
+def registered(state, task_id, *, require_tree=True):
     task = state['tasks'][task_id]; executor = state['runtime']['executors'][task['owner_agent_id']]
     resources = state['runtime'].get('resources', {})
     agent = resources.get(task_id+':agent', {})
@@ -18,10 +18,10 @@ def registered(state, task_id):
         agent.get('executor_id') == executor['id'] and agent.get('generation') == executor['generation'] and
         agent.get('references') == [task_id] and not agent.get('shared') and not agent.get('protected'),
         'current exclusive registered native author required; no historical adoption')
-    require(tree.get('kind') == 'worktree' and tree.get('task_id') == task_id and
-        tree.get('path') == task['worktree'] and tree.get('path_identity'), 'current registered task worktree required')
+    require(not require_tree or (tree.get('kind') == 'worktree' and tree.get('task_id') == task_id and
+        tree.get('path') == task['worktree'] and tree.get('path_identity')), 'current registered task worktree required')
     artifact(agent['authority'])
-    require(task['phase'] == 'completed' and executor['routes'].get('native_agent'), 'completed native task required')
+    require(task['phase'] in ('completed','cancelled') and executor['routes'].get('native_agent'), 'ended native task required')
     return executor
 
 
@@ -35,10 +35,13 @@ def prepare(runtime, task_id, operation_id, preservation, actor_id, *, authorize
             require(old.get('native_request') and old.get('task_id') == task_id and old.get('preservation') == preservation and
                 old.get('proof_scope') == scope, 'native operation belongs to another intent')
             return deepcopy(old)
-        executor = registered(state,task_id)
+        executor = registered(state,task_id,require_tree=preservation is not None)
         from cleanup import eligibility
-        eligibility(runtime,state,task_id,preservation,scope,resource_paths=False)
-        if scope=='host_verified':
+        if preservation is None:
+            from resource_lifecycle import agent_eligibility
+            agent_eligibility(runtime,state,task_id,scope)
+        else: eligibility(runtime,state,task_id,preservation,scope,resource_paths=False)
+        if scope=='host_verified' and preservation is not None:
             saved=load_bound(preservation)
             require(saved.get('remote_verification') and state['tasks'][task_id].get('preservation')==preservation,
                     'canonical cloud-bound handoff must precede native close')
@@ -71,7 +74,7 @@ def prepare(runtime, task_id, operation_id, preservation, actor_id, *, authorize
 
 
 def current(runtime, state, record):
-    key = record['task_id']; executor = registered(state,key)
+    key = record['task_id']; executor = registered(state,key,require_tree=record['preservation'] is not None)
     runtime._resource_actor(state,record['actor_id'],key); runtime._scope(state,key)
     request = load_bound(record['native_request'])
     require(executor['lease']==('closed' if record['status']=='closed' else 'closing'),'native close lease changed')
@@ -88,7 +91,10 @@ def current(runtime, state, record):
     require(request['close']==dict(tool=CLOSE,arguments=dict(target=target)) and
         request['wait']==dict(tool=WAIT,arguments=dict(targets=[target],timeout_ms=10000)), 'native contract changed')
     from cleanup import eligibility
-    eligibility(runtime,state,key,record['preservation'],record['proof_scope'],closing_operation=record['operation_id'],resource_paths=False)
+    if record['preservation'] is None:
+        from resource_lifecycle import agent_eligibility
+        agent_eligibility(runtime,state,key,record['proof_scope'],closing_operation=record['operation_id'])
+    else: eligibility(runtime,state,key,record['preservation'],record['proof_scope'],closing_operation=record['operation_id'],resource_paths=False)
     return request
 
 
