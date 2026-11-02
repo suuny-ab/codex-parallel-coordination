@@ -182,7 +182,9 @@ class ResourceFlowTests(core_tests.CoreFixture):
             attempt_id='original-native',request_id='original-request',permit_id='original-permit')
         state['runtime']['operations']['original-native']=deepcopy(original)
         write_atomic(self.runtime.path,state)
-        backend=self.file('backend-grant.txt','Additional user approval for this original task CLI backend')
+        backend=self.json('backend-grant.json',dict(source='direct user message in original main conversation',
+            main_conversation=self.actor,task_id=key,backend='codex_exec',worktree=task['worktree'],branch=task['branch'],
+            quote='Additional user approval for this original task CLI backend'))
         command.update(backend_authority=backend,prior_operation_id='original-native')
         cli_admission=self.bridge.admit(self.json('cli-capacity.json',dict(request_id='cli-capacity',project_id=self.runtime.project_id,
             task_id=key,attempt_id='cli-attempt',launch_identity='codex_exec:cli-attempt',resource_class='agent_execution_slot')))
@@ -211,7 +213,10 @@ class ResourceFlowTests(core_tests.CoreFixture):
         command,_=cli_tests.RealUseTests.cli(self)
         state=self.runtime._load();state['runtime']['operations']['original-native']=dict(operation='spawn',task_id='C',status='unknown')
         write_atomic(self.runtime.path,state);before=self.runtime.path.read_bytes()
-        backend=self.file('backend-grant.txt')
+        task=state['tasks']['C']
+        backend=self.json('backend-grant.json',dict(source='direct user message in original main conversation',
+            main_conversation=self.actor,task_id='C',backend='codex_exec',worktree=task['worktree'],branch=task['branch'],
+            quote='Additional user approval for this original task CLI backend'))
         command.update(backend_authority=backend,prior_operation_id='original-native')
         with self.assertRaisesRegex(ValueError,'unknown'):
             self.runtime.real_use(command,'integration',user_origin=dict(role='user',conversation_id=self.actor,reference=backend),

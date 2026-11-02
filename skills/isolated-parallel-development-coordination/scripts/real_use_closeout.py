@@ -363,24 +363,48 @@ def merged(state, key, command, actor):
     return expected
 
 
+def backend_approval(state, key, command, user_origin):
+    """Validate the exact backend scope before any host observation or write."""
+    reference=command.get('backend_authority');task=state['tasks'][key]
+    require(reference and user_origin and user_origin.get('role')=='user' and
+        user_origin.get('conversation_id')==state['coordinator_id'] and
+        user_origin.get('reference')==reference, 'actual original user backend grant required')
+    grant=load_bound(reference)
+    require(isinstance(grant,dict) and grant.get('source')==SOURCE and
+        grant.get('main_conversation')==state['coordinator_id'] and
+        isinstance(grant.get('quote'),str) and grant['quote'].strip() and
+        grant.get('task_id')==key and grant.get('backend')=='codex_exec' and
+        grant.get('branch')==task['branch'] and isinstance(grant.get('worktree'),str) and
+        Path(grant['worktree']).is_absolute() and
+        Path(grant['worktree']).resolve()==Path(task['worktree']).resolve(),
+        'backend approval task/backend/worktree/branch or original-main scope differs')
+    started=grant.get('previous_scope')
+    if started is not None:
+        require(isinstance(started,dict) and isinstance(started.get('path'),str) and
+            Path(started['path']).is_absolute() and
+            Path(started['path']).resolve()==Path(task['requirements']['user_reference']).resolve(),
+            'backend approval continuation scope differs')
+        load_bound(started)
+    return started
+
+
 def apply(runtime, command, actor, *, user_origin=None, observe_cli=None):
     from coordination import writer_lock, admit_receipt, consume, receipt_context, receipt_report
     key, action = command['task_id'], command['action']
     require(action in ('bind-cli', 'receive-cli', 'quality', 'technical-acceptance', 'record-merge'), 'unknown real-use action')
     actual_cli = None
     backend_start=None
-    if action=='bind-cli' and command.get('backend_authority'):
-        require(user_origin and user_origin.get('role')=='user' and user_origin.get('reference')==command['backend_authority'] or
-            runtime._load()['tasks'][key].get('cli_dispatch'), 'actual backend user grant required')
-        current=runtime._load()['tasks'][key]
-        if Path(current['requirements']['user_reference']).resolve()!=Path(command['approval']['path']).resolve():
-            backend_start=load_bound(command['backend_authority']).get('previous_scope')
     before=runtime._load()
+    backend_required=action=='bind-cli' and not before['tasks'][key].get('cli_dispatch') and (
+        command.get('backend_authority') or load_bound(command['launch']).get('schema')=='observed-managed-codex-exec-launch/1')
+    if backend_required:backend_start=backend_approval(before,key,command,user_origin)
     if action=='bind-cli' and not before['tasks'][key].get('cli_dispatch') and callable(observe_cli):
         approval(before,key,command['approval'],actor,start_ref=backend_start)
         actual_cli=observe_cli(deepcopy(command))
     with writer_lock(runtime.path):
         state = runtime._load(); task = state['tasks'][key]
+        if backend_required:
+            require(backend_approval(state,key,command,user_origin)==backend_start, 'backend continuation scope changed')
         approval(state, key, command['approval'], actor,start_ref=backend_start)
         original = deepcopy(state)
         if action == 'bind-cli':
