@@ -37,7 +37,9 @@ def origin(state, reference, user_origin):
 def current_requirement(state, identity):
     record = intake(state)['requirements'][identity]
     discussion = load_bound(record['discussion'])
-    artifact(record['spec'])
+    current = record.get('current_spec', record['spec'])
+    require(current['sha256']==record['spec']['sha256'], 'current spec content identity differs')
+    artifact(current)
     check = load_bound(record['check'])
     require(discussion.get('confirmed') is True and
         check.get('coordinator_id') == state['coordinator_id'] and
@@ -339,11 +341,23 @@ def apply(state, command, actor, user_origin=None):
             all(text(x) for x in command['acceptance']), 'confirmed name, scope and acceptance required')
         record = {k: deepcopy(command[k]) for k in ('name', 'scope', 'acceptance', 'discussion', 'spec', 'check')}
         record['start_reference'] = command.get('start_reference')
+        require(isinstance(command.get('deliverables', []), list), 'explicit deliverables list required')
+        record['deliverables'] = deepcopy(command.get('deliverables', []))
+        for item in record['deliverables']:
+            require(set(item)=={'path','sha256'}, 'deliverables are exact file references')
+            artifact(item)
         previous = data['requirements'].get(identity)
         bound = [t for t in state['tasks'].values() if t.get('routing', {}).get('requirement_id') == identity]
         require(not previous or scope_digest(previous) == scope_digest(record) or
             all(not frozen(t) and t['phase'] != 'completed' for t in bound),
             'accepted requirement scope frozen; new goal requires a new requirement')
+        if previous and any(t['phase'] in ('completed', 'cancelled') or t.get('cancellation_request') for t in bound):
+            require(record['spec'] == previous['spec'] and
+                record['deliverables'] == previous.get('deliverables', []),
+                'ended/cancel-requested requirement archive manifest frozen; spec and deliverables cannot be replaced')
+            # STATE archive relocation is not a new declaration or approval.
+            for field in ('current_spec', 'location_history'):
+                if field in previous: record[field] = deepcopy(previous[field])
         data['requirements'][identity] = record
         current_requirement(state, identity)
         return dict(requirement_id=identity, self_check='consistent', functional_acceptance=False)
