@@ -184,6 +184,37 @@ class FeedbackBriefTests(FeedbackFixture):
     brief = BriefTests.brief
     pages = BriefTests.pages
     read_detail = BriefTests.read_detail
+    def test_branch_names_and_cleanup_states_survive_brief_and_details_without_writes(self):
+        self.merged()
+        for statuses in (dict(local_branch='cleaned', remote_branch='retained'),
+                         dict(local_branch='retained', remote_branch='cleaned'),
+                         dict(local_branch='unknown', remote_branch='unknown'),
+                         dict(local_branch='cleaned', remote_branch='cleaned')):
+            with self.subTest(statuses=statuses):
+                self.branch_fixture(statuses)
+                before = self.runtime.path.read_bytes()
+                first = self.brief()
+                pages = list(self.pages(first))
+                rows = [r for p in pages for r in p['tasks']['items'] if r['task_id'] == 'A']
+                notifications = self.read_detail(first['source']['snapshot'], 'notifications')['items']
+                cleanup = next(n for n in notifications if n['task_id'] == 'A' and n['kind'] == 'cleanup')
+                for name in ('本地分支', '远端分支'):
+                    self.assertIn(name+'（codex/branch-fixture）', cleanup['text'])
+                if all(s == 'cleaned' for s in statuses.values()):
+                    self.assertEqual(rows, [])
+                    self.assertEqual(cleanup['outcome']['status'], 'all')
+                else:
+                    self.assertEqual(len(rows), 1)
+                    self.assertEqual(rows[0]['cleanup']['status'], 'pending_cleanup')
+                    self.assertEqual(rows[0]['cleanup']['outcome'], 'partial')
+                    detail = self.read_detail(first['source']['snapshot'], rows[0]['detail'])
+                    for kind, status in statuses.items():
+                        self.assertIn(kind+':'+status, rows[0]['cleanup']['resources']['components'])
+                        resource = next(r for r in detail['cleanup']['resources'] if r['kind'] == kind)
+                        self.assertEqual(resource['status'], status)
+                        self.assertEqual(resource['branch'], 'codex/branch-fixture')
+                self.assertEqual(before, self.runtime.path.read_bytes())
+
     def test_merge_install_agent_and_failed_worktree_remain_distinct(self):
         self.merged()
         self.resource_fixture(dict(agent='cleaned', worktree='failed', process='retained', database='retained'))
