@@ -16,6 +16,43 @@ APP = 'mcp__codex_app__read_thread'
 NATIVE = 'multi_agent_v1__wait_agent'
 
 
+def launch_binding(state, task_id):
+    """An admitted CORE launch is a producer, even without StandardDispatch."""
+    from demand_routing import approved_item, intake
+    task = state['tasks'][task_id]
+    item, _ = approved_item(state, task_id)
+    approval_ref = intake(state)['approvals'][fingerprint(item)]['reference']
+    owner = state['runtime']['executors'].get(task['owner_agent_id'], {})
+    attempt = task.get('worker_run', {}).get('attempt_id')
+    launch = state['runtime']['operations'].get(attempt, {})
+    require(attempt and launch.get('attempt_id') == attempt and launch.get('task_id') == task_id and
+        launch.get('operation') in ('spawn', 'send') and launch.get('executor_id') == task['owner_agent_id'] and
+        launch.get('generation') == owner.get('generation') and
+        launch.get('status') in ('accepted_unconfirmed','running','reported') and
+        task['worker_run'].get('owner_agent_id') == task['owner_agent_id'], 'actual original CORE launch binding required')
+    permit = load_bound(launch['admission'])
+    require(permit.get('project_id') == state['project']['id'] and permit.get('status') == 'granted' and
+        all(permit.get(k) == launch.get(k) for k in ('task_id','attempt_id','request_id','permit_id','launch_identity')),
+        'original CORE launch admission changed')
+    route = intake(state)['routes'].get(launch.get('route_id'), {})
+    require(route.get('task_id') == task_id and route.get('attempt_id') == attempt and
+        route.get('spec') == intake(state)['requirements'][item['requirement_id']]['spec'], 'original CORE route differs')
+    operation = launch['operation']
+    captured = [row for row in launch.get('host_results', []) if row.get('operation') == operation]
+    require(len(captured) == 1, 'one actual CORE host result required')
+    capture = load_bound(captured[0]['capture'])
+    binding = launch.get('callback_captures', {}).get(operation)
+    result = capture.get('result', {})
+    target = owner.get('routes', {}).get('native_agent', {}).get('target_id')
+    require(binding and capture.get('schema') == 'callback-result/1' and capture.get('binding') == binding and
+        all(binding.get(k) == value for k,value in dict(project_id=state['project']['id'], task_id=task_id,
+            attempt_id=attempt, operation=operation).items()) and result == captured[0]['result'] and
+        result.get('status') == 'accepted' and result.get('target_id') == target and
+        result.get('channel') == 'native_agent', 'actual CORE host identity/result differs')
+    require(operation != 'spawn' or owner.get('authority') == launch['admission'], 'original CORE author authority differs')
+    return approval_ref, dict(core_launch=attempt, operation_id=attempt, launch_capture=captured[0]['capture'])
+
+
 def authority(state, task_id):
     task = state['tasks'][task_id]
     observed = state['runtime'].get('observed_dispatches', {}).get(task_id)
@@ -36,38 +73,41 @@ def authority(state, task_id):
         approval_ref = intake(state)['approvals'][fingerprint(item)]['reference']
         matches = [(key, op) for key, op in state['runtime']['operations'].items()
                    if op.get('operation') == 'standard-dispatch' and op.get('task_id') == task_id]
-        require(len(matches) == 1, 'one bound standard dispatch required')
-        key, operation = matches[0]
-        launch = state['runtime']['operations'].get(key+':launch', {})
-        owner = state['runtime']['executors'].get(task['owner_agent_id'], {})
-        retained = operation.get('retained_host_results', {}).get('spawn')
-        registered = False
-        if launch.get('status') == 'not_started' and launch.get('executor_id') is None and owner.get('authority') == approval_ref:
-            resource = state['runtime'].get('resources', {}).get(task_id+':agent', {})
-            require(resource.get('kind') == 'agent' and resource.get('task_id') == task_id and
-                resource.get('project_id') == state['project']['id'] and resource.get('executor_id') == task['owner_agent_id'] and
-                resource.get('generation') == owner.get('generation') and resource.get('authority') == approval_ref,
-                'publicly bound author resource differs from approved task')
-            for reference in launch.get('observations', []):
-                facts = load_bound(reference)
-                require(facts.get('project_id') == state['project']['id'] and facts.get('task_id') == task_id and
-                    facts.get('operation_id') == key+':launch' and facts.get('status') == 'not_started' and facts.get('evidence'),
-                    'original no-execution observation differs')
-                for item in facts['evidence']:
-                    artifact(item)
-                registered = True
-            require(any(h.get('operation', {}).get('op') == 'bind-executor' and
-                h['operation'].get('executor_id') == task['owner_agent_id'] for h in state['history']),
-                'actual public executor binding required')
-        require(operation.get('launch_started') and task['owner_agent_id'] is not None and
-            (launch.get('executor_id') == task['owner_agent_id'] or
-             retained is not None and owner.get('authority') == retained or registered),
-            'actual original launch identity required; no replacement spawn')
-        dispatch = dict(request_id=key, request_digest=operation['request_digest'])
-        if registered:
-            dispatch.update(registered_executor=task['owner_agent_id'], original_operation_id=key+':launch')
+        if not matches:
+            approval_ref, dispatch = launch_binding(state, task_id)
         else:
-            dispatch['operation_id'] = key+':launch'
+            require(len(matches) == 1, 'one bound standard dispatch required')
+            key, operation = matches[0]
+            launch = state['runtime']['operations'].get(key+':launch', {})
+            owner = state['runtime']['executors'].get(task['owner_agent_id'], {})
+            retained = operation.get('retained_host_results', {}).get('spawn')
+            registered = False
+            if launch.get('status') == 'not_started' and launch.get('executor_id') is None and owner.get('authority') == approval_ref:
+                resource = state['runtime'].get('resources', {}).get(task_id+':agent', {})
+                require(resource.get('kind') == 'agent' and resource.get('task_id') == task_id and
+                    resource.get('project_id') == state['project']['id'] and resource.get('executor_id') == task['owner_agent_id'] and
+                    resource.get('generation') == owner.get('generation') and resource.get('authority') == approval_ref,
+                    'publicly bound author resource differs from approved task')
+                for reference in launch.get('observations', []):
+                    facts = load_bound(reference)
+                    require(facts.get('project_id') == state['project']['id'] and facts.get('task_id') == task_id and
+                        facts.get('operation_id') == key+':launch' and facts.get('status') == 'not_started' and facts.get('evidence'),
+                        'original no-execution observation differs')
+                    for item in facts['evidence']:
+                        artifact(item)
+                    registered = True
+                require(any(h.get('operation', {}).get('op') == 'bind-executor' and
+                    h['operation'].get('executor_id') == task['owner_agent_id'] for h in state['history']),
+                    'actual public executor binding required')
+            require(operation.get('launch_started') and task['owner_agent_id'] is not None and
+                (launch.get('executor_id') == task['owner_agent_id'] or
+                 retained is not None and owner.get('authority') == retained or registered),
+                'actual original launch identity required; no replacement spawn')
+            dispatch = dict(request_id=key, request_digest=operation['request_digest'])
+            if registered:
+                dispatch.update(registered_executor=task['owner_agent_id'], original_operation_id=key+':launch')
+            else:
+                dispatch['operation_id'] = key+':launch'
     approval = load_bound(approval_ref)
     receiver = approval.get('integration_agent')
     require(receiver and receiver not in (state['coordinator_id'], task['owner_agent_id']) and
@@ -203,7 +243,8 @@ def run(runtime, task_id, actor_id, *, available_tools=(), observation_ref=None,
                 state['runtime']['executors'][bound['owner_agent_id']]['execution'] = 'running'
                 if bound.get('operation_id'):
                     state['runtime']['operations'][bound['operation_id']]['status'] = 'running'
-                    state['runtime']['operations'][bound['request_id']].update(status='running_observed', next_owner=receiver)
+                    if bound.get('request_id'):
+                        state['runtime']['operations'][bound['request_id']].update(status='running_observed', next_owner=receiver)
                 runtime._save(state, dict(op='handoff-running', task_id=task_id, observation=observation_ref))
             return dict(common, status='running', next_action='Original author continues; next finite observation on a new fact')
         if outcome not in ('completed', 'failed', 'interrupted', 'cancelled', 'canceled'):

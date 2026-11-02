@@ -584,6 +584,8 @@ def transition(original, op):
         require(isinstance(resources, list) and all(isinstance(x, str) and x for x in resources)
                 and len(set(resources)) == len(resources), "unique resource IDs required")
         for t in state["tasks"].values():
+            if not t.get("worktree"):
+                continue  # Approved state-tool task has no allocated worktree yet.
             other = Path(t["worktree"]).resolve()
             require(not root.is_relative_to(other) and not other.is_relative_to(root), "overlapping worktrees")
             require(t["branch"] != op["branch"] and (not op.get("owner_agent_id") or

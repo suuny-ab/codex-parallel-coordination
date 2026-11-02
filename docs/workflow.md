@@ -1,6 +1,10 @@
 # 工作流
 
+STATE-TOOL 的[职责受限状态与反馈入口](../skills/isolated-parallel-development-coordination/references/task-state.md)已提供；新增归档移动及资源关闭/文件回收准入拆分仍待后续任务，不以本文流程图宣称整轮已实现。
+
 用户始终留在原主会话。主会话整理业务需求和审批摘要；开发者按需求独立实现；唯一集成者完成技术审核及授权交付。
+
+已确认的六职责和六步任务流程见[插件模块职责与接口设计](design/plugin-module-architecture.md)，技术细化见[工具接口与接续设计](design/tool-interface-contracts.md)及[验收清单](acceptance/tool-workflow-checklist.md)。这些文档区分目标设计与当前实现，当前运行规则仍以下述流程及共同规则为准。
 
 ```mermaid
 flowchart TD
