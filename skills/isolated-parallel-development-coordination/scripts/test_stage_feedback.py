@@ -93,6 +93,64 @@ class FeedbackFixture(CoreFixture):
         self.reload()
 
 
+    def branch_fixture(self, statuses):
+        self.resource_fixture(dict(agent='cleaned', process='cleaned', worktree='cleaned', database='cleaned'))
+        for kind, status in statuses.items():
+            rid = 'resource-'+kind
+            self.state['runtime']['resources'][rid] = dict(id=rid, task_id='A', kind=kind,
+                branch='codex/branch-fixture', cleanup_status=status,
+                cleanup_result=dict(status=status, evidence=self.file(kind+'-result.log')))
+        self.state['tasks']['A']['cleanup']['status'] = (
+            'cleanup_completed' if all(s == 'cleaned' for s in statuses.values()) else 'pending_cleanup')
+        self.store()
+        self.runtime.apply(dict(op='describe', task_id='A', reference='fixture', title='需求甲'), 'delivery-worker')
+        self.reload()
+
+
+class BranchFeedbackTests(FeedbackFixture):
+    def test_each_branch_kind_can_be_rendered_without_the_other(self):
+        self.merged()
+        for kind, name in (('local_branch', '本地分支'), ('remote_branch', '远端分支')):
+            with self.subTest(kind=kind):
+                self.branch_fixture({kind: 'retained'})
+                self.assertIn(name+'（codex/branch-fixture）：待清理', cleanup_fact(self.state, 'A')['details'])
+
+    def test_branch_names_and_cleaned_pending_unknown_statuses_are_read_only(self):
+        self.merged()
+        for status, label in (('cleaned', '已回收'), ('retained', '待清理'), ('unknown', '待核实')):
+            with self.subTest(status=status):
+                self.branch_fixture(dict(local_branch=status, remote_branch=status))
+                before = self.runtime.path.read_bytes()
+                state = deepcopy(self.state)
+                fact = cleanup_fact(self.state, 'A')
+                for kind, name in (('local_branch', '本地分支'), ('remote_branch', '远端分支')):
+                    self.assertIn(name+'（codex/branch-fixture）：'+label, fact['details'])
+                    row = next(r for r in fact['resources'] if r['kind'] == kind)
+                    self.assertEqual(row['branch'], 'codex/branch-fixture')
+                    self.assertEqual(row['status'], status)
+                self.assertEqual(fact['outcome'], 'all' if status == 'cleaned' else 'partial')
+                notifications = self.view()['notifications']['items']
+                cleanup = next(n for n in notifications if n['task_id'] == 'A' and n['kind'] == 'cleanup')
+                self.assertIn(fact['details'], cleanup['text'])
+                self.assertEqual(cleanup['outcome']['status'], fact['outcome'])
+                self.assertEqual(before, self.runtime.path.read_bytes())
+                self.assertEqual(state, self.state)
+
+    def test_expired_branch_cleanup_proof_stays_unknown_without_rewriting_facts(self):
+        self.merged()
+        self.branch_fixture(dict(local_branch='cleaned', remote_branch='cleaned'))
+        for kind in ('local_branch', 'remote_branch'):
+            resource = self.state['runtime']['resources']['resource-'+kind]
+            Path(resource['cleanup_result']['evidence']['path']).write_text('expired', encoding='utf-8')
+        before = self.runtime.path.read_bytes()
+        fact = cleanup_fact(self.state, 'A')
+        self.assertEqual(fact['outcome'], 'partial')
+        for kind, name in (('local_branch', '本地分支'), ('remote_branch', '远端分支')):
+            self.assertIn(name+'（codex/branch-fixture）：待核实（需核对实际效果）', fact['details'])
+            self.assertEqual(self.state['runtime']['resources']['resource-'+kind]['cleanup_status'], 'cleaned')
+        self.assertEqual(before, self.runtime.path.read_bytes())
+
+
 class StageFeedbackTests(FeedbackFixture):
     def test_development_notifies_now_both_without_and_with_active_decision(self):
         self.emit()

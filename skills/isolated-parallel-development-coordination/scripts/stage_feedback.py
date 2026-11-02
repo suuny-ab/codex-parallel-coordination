@@ -99,6 +99,8 @@ def cleanup_fact(state, key):
         rows.append(dict(resource_id=resource['id'], kind=resource['kind'], status=status,
                          reason=reason, protected=bool(resource.get('protected')),
                          shared=bool(resource.get('shared'))))
+        if resource['kind'] in ('local_branch', 'remote_branch'):
+            rows[-1]['branch'] = resource['branch']
     # Missing registration or observation stays explicit, including temporary data.
     for kind in ('agent', 'process', 'worktree', 'temporary_data'):
         members = [r for r in rows if (r['kind'] in ('database', 'environment', 'artifact')
@@ -115,9 +117,10 @@ def cleanup_fact(state, key):
                'partial' if 'cleaned' in statuses else 'failed' if 'failed' in statuses else
                'in_progress' if 'intent' in statuses else 'unknown' if 'unknown' in statuses else 'pending')
     labels = dict(agent='开发者上下文', process='进程/测试服务', worktree='工作树', database='临时数据',
-                  environment='验收环境', artifact='临时文件', temporary_data='临时数据')
+                  environment='验收环境', artifact='临时文件', temporary_data='临时数据',
+                  local_branch='本地分支', remote_branch='远端分支')
     status_labels = dict(cleaned='已回收', retained='待清理', intent='正在核对回收', failed='回收失败', unknown='待核实')
-    details = list(dict.fromkeys(labels[r['kind']] + '：' +
+    details = list(dict.fromkeys(labels[r['kind']] + ('（'+r['branch']+'）' if r.get('branch') else '') + '：' +
         ('关闭待确认' if r.get('reason') == 'close_pending_confirmation' else status_labels.get(r['status'], '待核实')) +
         ('（受保护）' if r.get('protected') else '（共享引用待核对）' if r.get('shared') else
          '（未登记或未观察）' if r.get('reason') == 'not_registered_or_observed' else
