@@ -15,7 +15,7 @@ result = archive.execute(task_id, original_operation_id, view['revision'])
 
 ## 清单与准入
 
-STATE 的 `register` 可选 `deliverables=[{path,sha256}, ...]`，默认 `[]`；它与已确认 `state_contract.spec` 一起保存。同一原主会话及真实 user-origin 规则不变。工具不解析报告路径，也不根据 spec 文本猜额外交付物。清单应在用户确认 spec 时按明确约定登记；既有公开 routing + prepare 路径使用同账本唯一 `task.routing.requirement_id` 的已批准 canonical requirement（`runtime.intake.requirements`），额外交付同样默认空，不再 register 一份任务。两种绑定均缺失的旧任务不会自动迁移，旧 `resource_lifecycle.preserve` 仍是原复制图语义。 已合法结束（completed/cancelled）的绑定任务不能经公开 `routing(spec)` 用同一 scope 替换最终 spec 引用或额外交付清单；相同声明重报保留 STATE 已登记的 `current_spec/location_history`，归档工具的正常定位更新仍走原受限事务。
+STATE 的 `register` 可选 `deliverables=[{path,sha256}, ...]`，默认 `[]`；它与已确认 `state_contract.spec` 一起保存。同一原主会话及真实 user-origin 规则不变。工具不解析报告路径，也不根据 spec 文本猜额外交付物。清单应在用户确认 spec 时按明确约定登记；既有公开 routing + prepare 路径使用同账本唯一 `task.routing.requirement_id` 的已批准 canonical requirement（`runtime.intake.requirements`），额外交付同样默认空，不再 register 一份任务。两种绑定均缺失的旧任务不会自动迁移，旧 `resource_lifecycle.preserve` 仍是原复制图语义。 已合法结束（completed/cancelled）或已登记真实 `cancellation_request`（phase 可能仍为 backlog/developing）的绑定任务不能经公开 `routing(spec)` 用同一 scope 替换最终 spec 引用或额外交付清单；相同声明重报保留 STATE 已登记的 `current_spec/location_history`，归档工具的正常定位更新仍走原受限事务。
 
 正常归档只消费 `phase=completed`、与当前 source_version（既有路径为原 mr 版本）相符的已核实 merge；既有 `record_main_inclusion/real_use` 路径只核同记录绑定的最小合入 proof，不重读报告图。不会重新执行测试、独审或 Git 合入。取消消费同记录的真实 `cancellation_request`，还需 `observe_stop(task)` 返回对应 `project_id/task_id/owner_agent_id`、`stopped=True`、`merge_status=not_merged`、`scope=host_verified` 或明确标为 `fixture_only` 的测试观察。未知停止、未解决 merge reservation、实际合入或结果未知都拒绝按未完成取消归档。已经合法合入并核对的任务继续正常归档。
 

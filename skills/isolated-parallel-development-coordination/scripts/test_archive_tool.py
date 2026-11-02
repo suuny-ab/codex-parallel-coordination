@@ -520,6 +520,24 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(ref(after['current_spec']['path']),after['current_spec'])
         self.assertEqual(self.observe()['status'],'completed')
 
+    def test_cancel_requested_canonical_spec_is_frozen_while_phase_is_backlog(self):
+        self.use_routing=True;self.register()
+        self.record('main','cancel',reason='fixture explicit cancellation',user_reference='fixture actual user cancellation')
+        self.assertEqual(self.rt._load()['tasks']['A']['phase'],'backlog')
+        previous=self.rt._load()['runtime']['intake']['requirements']['REQ-A']
+        changed=self.materials/'replacement-after-cancel.md';changed.write_text('not the last confirmed spec',encoding='utf-8')
+        check=self.materials/'replacement-cancel-check.json'
+        check.write_text(json.dumps(dict(coordinator_id='main',requirement_id='REQ-A',spec=ref(changed),
+            discussion=previous['discussion'],result='consistent')),encoding='utf-8')
+        update=self.revise_confirmed_requirement(spec=ref(changed),check=ref(check))
+        stop=lambda t:dict(project_id=self.rt.project_id,task_id='A',owner_agent_id=None,
+            stopped=True,merge_status='not_merged',scope='fixture_only')
+        result=self.execute(self.client(observe_stop=stop))
+        self.assertTrue(changed.exists(),'cancel request allowed replacement of last confirmed spec')
+        self.assertEqual(update['status'],'rejected',update)
+        self.assertEqual(result['files'][0]['original'],self.original)
+        self.assertEqual(result['mode'],'cancelled');self.assertEqual(len(result['files']),1)
+
     def test_low_level_state_event_cannot_forge_archive(self):
         self.ready();before=self.rt.path.read_bytes()
         with self.assertRaises(ValueError):self.rt.task_state('author').record(dict(action='archive',task_id='A',event_id='forged',expected_revision=self.revision(),status='completed'))

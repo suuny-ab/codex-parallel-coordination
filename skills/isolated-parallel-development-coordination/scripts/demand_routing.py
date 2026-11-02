@@ -351,10 +351,10 @@ def apply(state, command, actor, user_origin=None):
         require(not previous or scope_digest(previous) == scope_digest(record) or
             all(not frozen(t) and t['phase'] != 'completed' for t in bound),
             'accepted requirement scope frozen; new goal requires a new requirement')
-        if previous and any(t['phase'] in ('completed', 'cancelled') for t in bound):
+        if previous and any(t['phase'] in ('completed', 'cancelled') or t.get('cancellation_request') for t in bound):
             require(record['spec'] == previous['spec'] and
                 record['deliverables'] == previous.get('deliverables', []),
-                'ended requirement archive manifest frozen; spec and deliverables cannot be replaced')
+                'ended/cancel-requested requirement archive manifest frozen; spec and deliverables cannot be replaced')
             # STATE archive relocation is not a new declaration or approval.
             for field in ('current_spec', 'location_history'):
                 if field in previous: record[field] = deepcopy(previous[field])
