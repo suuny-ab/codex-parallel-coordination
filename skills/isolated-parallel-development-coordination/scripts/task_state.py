@@ -14,6 +14,7 @@ from stage_feedback import store as feedback_store
 
 VERSIONED = {'self-test', 'deliver-pr', 'review', 'technical-acceptance',
              'user-acceptance', 'source-changed', 'rework', 'merge-verified'}
+COMMITTED = {'deliver-pr', 'review', 'technical-acceptance', 'user-acceptance', 'merge-verified'}
 FIELDS = {
     'register': {'spec', 'scope', 'acceptance', 'acceptance_type', 'integrator_id', 'rights', 'user_reference'},
     'authorize': {'rights', 'user_reference'}, 'cancel': {'reason', 'user_reference'},
@@ -80,7 +81,7 @@ def notify(state, key, kind, text, recipient, version=None, *, recorded_revision
     return event_id
 
 
-def source_version(runtime, task, target_sha=None):
+def source_version(runtime, task, target_sha=None, *, committed=False):
     require(task.get('worktree') and task.get('branch'), 'actual development resource not registered')
     root = Path(task['worktree'])
     require(git(root, '-c', 'core.longpaths=true', 'branch', '--show-current') == task['branch'],
@@ -88,7 +89,15 @@ def source_version(runtime, task, target_sha=None):
     head = git(root, '-c', 'core.longpaths=true', 'rev-parse', 'HEAD')
     target = target_sha or git(runtime.project_root, 'rev-parse', 'refs/heads/'+runtime._load()['project']['main_branch'])
     require(git(root, 'merge-base', head, target) == target, 'author must synchronize actual main')
-    return dict(head_sha=head, target_sha=target, source_digest=snapshot(root)['digest'])
+    def clean():
+        return not git(root, '-c', 'core.longpaths=true', '--no-optional-locks', 'status',
+                       '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none')
+    if committed:
+        require(clean(), 'committed source required; staged, unstaged or untracked source cannot be promoted')
+    version = dict(head_sha=head, target_sha=target, source_digest=snapshot(root)['digest'])
+    if committed:
+        require(clean() and git(root, 'rev-parse', 'HEAD') == head, 'committed source changed during observation')
+    return version
 
 
 def reset_results(task):
@@ -171,8 +180,9 @@ class TaskState:
         observed, observed_at, external = None, None, None
         if action in VERSIONED:
             task = deepcopy(state['tasks'][command['task_id']])
-            observed = (source_version(self.runtime, task, task.get('source_version', {}).get('target_sha'))
-                        if action == 'merge-verified' and not self.custom_source else self.observe_source(task))
+            observed = (self.observe_source(task) if self.custom_source else source_version(
+                self.runtime, task, task.get('source_version', {}).get('target_sha') if action == 'merge-verified' else None,
+                committed=action in COMMITTED))
             observed_at = now()
             require(command.get('version') == observed and set(observed) == {'head_sha', 'target_sha', 'source_digest'} and
                     all(isinstance(v, str) and v for v in observed.values()), 'current actual source version required')

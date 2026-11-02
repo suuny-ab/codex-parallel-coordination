@@ -19,7 +19,7 @@ result = state_tool.record(dict(
 
 `query(task_id=None)`、`pending()` 只返回职责内最后登记，不读取完整测试报告，不执行宿主刷新；`freshness=last_registered`、`queried_at` 与任务 `last_registered_at`/`source_observed_at` 区分读取与实际观察。缺资源/归档事实保持未登记，不根据目录、idle 或阶段推断成功。
 
-`observe()` 默认核实际任务分支、HEAD、固定项目的本地 main 和完整源码清单 digest；main 必须是 HEAD 的祖先。远端 main 及测试真实性仍由交付者核实。受信宿主可提供 `observe_source(task)`，返回 `head_sha/target_sha/source_digest`；报告里同名字段不能替代回调。版本结果和 evidence 引用只登记本次结论及关联，不递归审批历史材料。测试与审核不会由状态工具自动执行。
+`observe()` 默认核实际任务分支、HEAD、固定项目的本地 main 和完整源码清单 digest；main 必须是 HEAD 的祖先。远端 main 及测试真实性仍由交付者核实。受信宿主可提供 `observe_source(task)`，返回 `head_sha/target_sha/source_digest`；报告里同名字段不能替代回调。默认 Git 观察在 `deliver-pr/review/technical-acceptance/user-acceptance/merge-verified` 晋升处要求没有已暂存、未暂存或未跟踪源码，并在源码清单读取前后核 Git 状态及 HEAD；普通进度和自测仍可记录开发中的工作树。提交后 HEAD 改变，须按新版本重新自测，不能把提交前的脏摘要直接交付。被 Git 忽略且未纳入源码清单的运行产物不阻止晋升。自定义受信宿主观察器同样负责已提交源码的真实性，不得把夹具或脏字节冒充提交版本。版本结果和 evidence 引用只登记本次结论及关联，不递归审批历史材料。测试与审核不会由状态工具自动执行。
 
 ## 职责及动作
 

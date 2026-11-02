@@ -306,6 +306,73 @@ class StateTests(unittest.TestCase):
         self.assertIsNone(self.rt._load()['tasks']['A']['review'])
 
 
+    def committed_git_fixture(self):
+        def git(root,*args):
+            result=subprocess.run(['git','-c','core.longpaths=true','-c','core.hooksPath=','-C',str(root),*args],capture_output=True,text=True)
+            self.assertEqual(result.returncode,0,result.stderr)
+            return result.stdout.strip()
+        project=self.rt.project_root
+        git(project,'init','-b','main');git(project,'config','user.email','fixture@example.invalid');git(project,'config','user.name','Disposable fixture')
+        (project/'code.txt').write_text('base',encoding='utf-8')
+        (project/'.gitignore').write_text('*.log\n',encoding='utf-8')
+        git(project,'add','.');git(project,'-c','commit.gpgsign=false','commit','-m','fixture base')
+        self.register();work=self.root/'git-work';git(project,'worktree','add','-b','task/A',str(work))
+        state=self.rt._load();state['tasks']['A'].update(owner_agent_id='author-A',worktree=str(work),branch='task/A');write_atomic(self.rt.path,state)
+        (work/'code.txt').write_text('committed-A',encoding='utf-8');git(work,'add','code.txt');git(work,'-c','commit.gpgsign=false','commit','-m','fixture feature')
+        return project,work,git,TaskState(self.rt,'author-A')
+
+    def assert_dirty_delivery_rejected(self,kind):
+        project,work,git,author=self.committed_git_fixture()
+        if kind=='untracked':
+            (work/'extra.py').write_text('tested-uncommitted-B',encoding='utf-8')
+        else:
+            (work/'code.txt').write_text('tested-uncommitted-B',encoding='utf-8')
+            if kind=='staged':git(work,'add','code.txt')
+        self.version=author.observe('A')['version']
+        self.apply(author,'progress',summary='ordinary dirty development is allowed')
+        self.apply(author,'self-test',status='passed',command='check actual dirty fixture bytes',evidence=[self.proof])
+        before=self.rt.path.read_bytes()
+        with self.assertRaisesRegex(ValueError,'committed source'):
+            self.apply(author,'deliver-pr',pr=dict(provider='github',id=1,url='https://example.test/project/pull/1'),summary='dirty source must not be promoted',evidence=[self.proof])
+        self.assertEqual(before,self.rt.path.read_bytes())
+        self.assertIsNone(self.rt._load()['tasks']['A']['mr'])
+
+    def test_dirty_unstaged_bytes_cannot_be_delivered_as_committed_head(self):
+        self.assert_dirty_delivery_rejected('unstaged')
+
+    def test_dirty_staged_bytes_cannot_be_delivered_as_committed_head(self):
+        self.assert_dirty_delivery_rejected('staged')
+
+    def test_untracked_source_cannot_be_delivered_as_committed_head(self):
+        self.assert_dirty_delivery_rejected('untracked')
+
+    def test_clean_committed_bytes_retested_after_commit_can_complete_actual_local_main(self):
+        project,work,git,author=self.committed_git_fixture()
+        (work/'code.txt').write_text('tested-committed-B',encoding='utf-8')
+        self.version=author.observe('A')['version']
+        self.apply(author,'self-test',status='passed',command='check working B before commit',evidence=[self.proof])
+        git(work,'add','code.txt');git(work,'-c','commit.gpgsign=false','commit','-m','fixture commit tested B')
+        with self.assertRaisesRegex(ValueError,'current actual source version required'):
+            self.apply(author,'deliver-pr',pr=dict(provider='github',id=1,url='https://example.test/project/pull/1'),summary='old test predates committed HEAD',evidence=[self.proof])
+        self.version=author.observe('A')['version']
+        self.apply(author,'self-test',status='passed',command='retest committed B bytes',evidence=[self.proof])
+        (work/'ignored.log').write_text('test runtime output, excluded from source',encoding='utf-8')
+        self.apply(author,'deliver-pr',pr=dict(provider='github',id=1,url='https://example.test/project/pull/1'),summary='clean committed B',evidence=[self.proof])
+        def merge_observation(task,operation):
+            head=git(work,'rev-parse','HEAD');main=git(project,'rev-parse','main')
+            return dict(project_id=self.rt.project_id,task_id='A',operation_id=operation,source_head=head,
+                previous_main=self.version['target_sha'],main_head=main,contains_source=git(project,'merge-base',head,main)==head,scope='fixture_only')
+        integrator=TaskState(self.rt,'integrator',observe_merge=merge_observation)
+        self.apply(integrator,'review',status='passed',summary='actual committed B checked',evidence=[self.proof])
+        self.apply(integrator,'technical-acceptance',status='passed',summary='committed source accepted',evidence=[self.proof])
+        self.apply(self.main,'authorize',rights=dict(merge=True),user_reference='fixture local merge approval')
+        git(project,'merge','--ff-only','task/A')
+        self.apply(integrator,'merge-verified',operation_id='actual-local-merge')
+        self.assertEqual(self.rt._load()['tasks']['A']['phase'],'completed')
+        self.assertEqual((project/'code.txt').read_bytes(),(work/'code.txt').read_bytes())
+        self.assertEqual(git(project,'show','main:code.txt'),'tested-committed-B')
+
+
 from test_core_runtime import CoreFixture
 
 
