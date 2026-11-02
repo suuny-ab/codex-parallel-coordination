@@ -38,6 +38,9 @@ def actor(state, task_id, actor_id):
     if actor_id == expected:
         return None
     task = state['tasks'][task_id]
+    from task_state import receiver
+    if task.get('state_contract') and actor_id == receiver(state, task_id):
+        return None
     authority = task.get('resource_authority')
     if authority is None:
         observed = state['runtime'].get('observed_dispatches',{}).get(task_id)
@@ -100,14 +103,87 @@ def inventory(state, task_id, *, author=True, require_paths=True):
     require(not pending, 'resource creation result needs observation; no complete managed inventory')
 
 
+def temporary_actor(state, task_id, actor_id, kind):
+    """Developer capability is limited to approved temporary kinds on this task."""
+    task = state['tasks'][task_id]
+    if actor_id != task['owner_agent_id']:
+        return actor(state, task_id, actor_id)
+    from task_state import receiver
+    authority = task.get('resource_authority')
+    require(authority, 'original temporary resource approval required')
+    from real_use_closeout import approval
+    approved = approval(state, task_id, authority, receiver(state, task_id) or load_bound(authority).get("integration_agent"))
+    item = next(x for x in approved['tasks'] if x['id'] == task_id)
+    require(kind in item.get('temporary_resources', []) and kind in ('environment','database','artifact','process'),
+            'temporary kind outside original task authorization')
+    executor = state['runtime']['executors'][actor_id]
+    require(executor['lease'] == 'open' and task['phase'] not in ('completed','cancelled') and
+            not task.get('cancellation_request'), 'stopped task cannot create temporary resources')
+    return authority
+
+
+def ended(state, task_id, scope):
+    """Consume canonical STATE completion, without opening reports or file graphs."""
+    task = state['tasks'][task_id]
+    require(scope in ('fixture_only','host_verified'), 'explicit observation scope required')
+    if task['phase'] == 'cancelled':
+        from development_lifecycle import cancelled
+        cancelled(state, task_id, scope)
+    else:
+        require(task['phase'] == 'completed' and task.get('merge', {}).get('verified') is True,
+                'task must be merged and verified or explicitly cancelled')
+        merge = task['merge']
+        observed_scope = merge.get('scope', merge.get('observation', {}).get('scope'))
+        require(observed_scope == scope, 'completion observation scope differs')
+    require(not task.get('publication_dependencies') and not task.get('acceptance_environment_requires_agent'),
+            'live task dependency protects resources')
+    require(state['items'].get(state['active_human_item'], {}).get('task_id') != task_id,
+            'active user item protects task')
+    return task
+
+
+def agent_eligibility(runtime, state, task_id, scope, *, closing_operation=None):
+    task = ended(state, task_id, scope)
+    identity = task['owner_agent_id']
+    require(identity and identity not in (state['coordinator_id'], (state.get('delivery') or {}).get('agent_id')),
+            'actual exclusive developer required')
+    executor = state['runtime']['executors'][identity]
+    require(not executor.get('shared') and not executor.get('protected'), 'shared/protected executor')
+    require(all(t['phase'] in ('completed','cancelled') for t in state['tasks'].values()
+                if t['owner_agent_id'] == identity), 'executor still serves active work')
+    require(executor.get('active_children') == [] and executor.get('pending_work') is False and
+            (executor['execution'] in ('completed','idle') or executor['lease']=='closed'),
+            'active or unverified executor/descendants')
+    observation = load_bound(executor['observation'])
+    require(observation.get('executor_id') == identity and observation.get('generation') == executor['generation'] and
+            observation.get('execution') in ('completed','idle') and observation.get('active_children') == [] and
+            observation.get('pending_work') is False, 'stale or active executor observation')
+    artifact(executor['authority'])
+    item = state['runtime'].get('resources', {}).get(task_id+':agent', {})
+    require(item.get('executor_id') == identity and item.get('generation') == executor['generation'] and
+            item.get('task_id') == task_id and item.get('references') == [task_id] and
+            not item.get('protected') and not item.get('shared'), 'actual registered exclusive author required')
+    pending = state['runtime']['operations'].get(closing_operation, {})
+    closing = executor['lease'] == 'closing' and pending.get('operation') == 'close' and pending.get('task_id') == task_id and \
+        pending.get('executor_id') == identity and pending.get('generation') == executor['generation']
+    require(executor['lease'] in ('open','closed') or closing, 'uncertain close must be reconciled')
+    return executor
+
+
 def create(runtime, task_id, operation_id, resource, authority, actor, invoke, *, authorized=False):
+    from contextlib import ExitStack
+    from evidence import callback_result
     require(authorized is True and operation_id, 'exact resource creation authorization required')
     artifact(authority)
-    with writer_lock(runtime.path):
-        state = runtime._load(); runtime._resource_actor(state, actor, task_id); runtime._scope(state, task_id)
+    with ExitStack() as locks:
+        locks.enter_context(writer_lock(runtime.path))
+        state = runtime._load(); runtime._scope(state, task_id)
+        check = runtime._resource_actor if resource['kind']=='worktree' else temporary_actor
+        if resource['kind']=='worktree': check(state, actor, task_id)
+        else: check(state, task_id, actor, resource['kind'])
         task = state['tasks'][task_id]
-        require(task.get('resource_contract') == 'new-task/1' and task['phase'] not in ('completed','cancelled'),
-                'unfinished managed new task required')
+        require(task.get('resource_contract') == 'new-task/1' and task['phase'] not in ('completed','cancelled') and
+                not task.get('cancellation_request'), 'unfinished managed new task required')
         target = managed_path(state, resource['path'])
         require(resource['kind'] in ('worktree','database','environment','artifact'), 'supported finite creation kind required')
         key = resource['id']
@@ -120,28 +196,81 @@ def create(runtime, task_id, operation_id, resource, authority, actor, invoke, *
                 'new resource only; no adoption or overwrite')
         if resource['kind'] == 'worktree':
             require(key == task_id+':worktree' and target == Path(task['worktree']).resolve(), 'planned worktree differs')
+        for other_id,other in state['runtime']['operations'].items():
+            pending=other.get('resource',{})
+            if other_id!=operation_id and other.get('operation')=='create-resource' and other.get('status')!='registered' and pending:
+                path=Path(pending['path']).resolve()
+                require(key!=pending['id'] and not target.is_relative_to(path) and not path.is_relative_to(target),
+                        'original uncertain creation owns resource identity/path')
         for other in state['runtime'].get('resources', {}).values():
             if other.get('path') and other['cleanup_status'] != 'cleaned':
                 path = Path(other['path']).resolve()
                 require(not target.is_relative_to(path) and not path.is_relative_to(target), 'overlapping resource')
+        for other_key, other in state['tasks'].items():
+            if other_key != task_id and other.get('worktree'):
+                path = Path(other['worktree']).resolve()
+                require(not target.is_relative_to(path) and not path.is_relative_to(target), 'another task worktree protected')
         record = dict(identity, operation='create-resource', operation_id=operation_id, status='intent', owner=actor)
+        binding = dict(project_id=runtime.project_id, operation_id=operation_id, task_id=task_id,
+                       actor_id=actor, resource=deepcopy(resource), authority=authority, task=deepcopy(task))
+        record['callback_binding'] = binding
         state['runtime']['operations'][operation_id] = record
         runtime._save(state, dict(op='create-resource-intent', task_id=task_id, operation_id=operation_id))
+        locks.close()
         try:
-            # Host callback must register actual RESOURCE identity before returning.
             actual = invoke(deepcopy(resource))
             require(io_path(target).exists(), 'creation has no actual object')
             info = io_path(target).stat()
-            value = dict(resource, **actual, path=str(target), path_identity=[info.st_dev,info.st_ino],
-                task_id=task_id, project_id=runtime.project_id, authority=authority, references=[task_id],
-                cleanup_status='retained')
-            state['runtime'].setdefault('resources', {})[key] = value
-            record.update(status='registered', actual=deepcopy(value))
+            result = dict(status='registered', actual=dict(resource, **actual, path=str(target),
+                path_identity=[info.st_dev,info.st_ino], task_id=task_id, project_id=runtime.project_id,
+                authority=authority, references=[task_id], cleanup_status='retained'))
         except Exception as error:
-            record.update(status='unknown', reason=type(error).__name__ + ': ' + str(error),
+            result = dict(status='unknown', reason=type(error).__name__ + ': ' + str(error),
                           next_action='inspect_exact_creation_effect_without_repeating')
-        runtime._save(state, dict(op='create-resource-outcome', task_id=task_id, operation_id=operation_id))
+        captured = callback_result(runtime.directory, binding, result=result, capture=True)
+        try: locks.enter_context(writer_lock(runtime.path))
+        except ValueError as error:
+            if not str(error).startswith('writer lock exists;'):raise
+            return dict(status='registration_pending',operation_id=operation_id,actual_result=captured,
+                        next_action='observe_original_creation_without_repeating',reason=str(error))
+        state = runtime._load(); record = state['runtime']['operations'][operation_id]
+        record['actual_result'] = captured
+        if state['tasks'][task_id] != binding['task']:
+            record.update(status='unknown', next_action='reconcile_retained_creation_result', reason='task changed during creation')
+        else:
+            record.update(result)
+            if result['status']=='registered': state['runtime'].setdefault('resources', {})[key] = result['actual']
+        record['result_revision']=state['revision']+1
+        try:runtime._save(state, dict(op='create-resource-outcome', task_id=task_id, operation_id=operation_id))
+        except OSError as error:
+            return dict(status='registration_pending',operation_id=operation_id,actual_result=captured,
+                        reason=str(error),next_action='observe_original_creation_without_repeating')
         return deepcopy(record)
+
+
+def observe_creation(runtime, task_id, operation_id, actor_id):
+    """Adopt a retained actual create return after registration failure; never invoke it again."""
+    from evidence import callback_result
+    with writer_lock(runtime.path):
+        state=runtime._load();runtime._resource_actor(state,actor_id,task_id);runtime._scope(state,task_id)
+        operation=state['runtime']['operations'][operation_id]
+        require(operation.get('operation')=='create-resource' and operation['task_id']==task_id and operation.get('callback_binding'),
+                'original finite creation intent required')
+        if operation['status']=='registered':return deepcopy(operation)
+        captured=callback_result(runtime.directory,operation['callback_binding'])
+        if not captured:return dict(status='unknown',next_action='inspect_original_creation_without_repeating')
+        result=load_bound(captured)['result']
+        if result['status']!='registered':return dict(result,actual_result=captured)
+        resource=result['actual'];target=managed_path(state,resource['path']);info=io_path(target).stat()
+        require(resource['id']==operation['resource']['id'] and resource['task_id']==task_id and
+                [info.st_dev,info.st_ino]==resource['path_identity'], 'actual created object changed')
+        artifact(operation['authority'])
+        old=state['runtime'].setdefault('resources',{}).get(resource['id'])
+        require(not old or old==resource, 'another resource owns creation result')
+        state['runtime']['resources'][resource['id']]=deepcopy(resource)
+        operation.update(result,actual_result=captured)
+        runtime._save(state,dict(op='create-resource-outcome',task_id=task_id,operation_id=operation_id))
+        return deepcopy(operation)
 
 
 def preserved_binding(task):

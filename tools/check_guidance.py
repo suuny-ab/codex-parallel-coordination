@@ -12,7 +12,7 @@ from urllib.parse import unquote, urlsplit
 import package
 
 SKILL = "skills/isolated-parallel-development-coordination/"
-CURRENT = ("README.md", "docs/validation.md", "docs/lifecycle.md", "docs/install-status.md", SKILL + "SKILL.md") + tuple(
+CURRENT = ("README.md", "docs/validation.md", "docs/resource/resource-flow.md", "docs/lifecycle.md", "docs/install-status.md", SKILL + "SKILL.md") + tuple(
     SKILL + "references/" + name for name in (
         "current-rules.md", "platform-boundary.md", "history/index.md",
         "roles/main.md", "roles/developer.md", "roles/integrator.md",

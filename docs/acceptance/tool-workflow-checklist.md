@@ -1,6 +1,8 @@
 # 工具接口与任务闭环验收清单
 
-STATE-TOOL 实现说明：本 PR 提供职责受限的统一状态、源码绑定、技术交接及独立反馈登记，见[当前接口](../../skills/isolated-parallel-development-coordination/references/task-state.md)。归档移动及资源创建/关闭准入的新设计仍待 ARCHIVE-TOOL、RESOURCE-FLOW；本文其它目标设计不因此成为实现或真实闭环通过结论。
+STATE-TOOL 已提供职责受限的统一状态、源码绑定、技术交接及独立反馈登记，见[当前接口](../../skills/isolated-parallel-development-coordination/references/task-state.md)。
+
+RESOURCE-FLOW 候选提供统一创建、独立作者关闭/许可及取消接续，见[资源入口与当前边界](../resource/resource-flow.md)。文件回收与 ARCHIVE-TOOL 的真实接入及 34 项联测仍待其实际合 main 后完成；契约夹具不代表整体验证通过。
 
 日期：2026-11-02。对应[业务架构及六步流程](../design/plugin-module-architecture.md)和[工具接口设计](../design/tool-interface-contracts.md)。本文件是后续开发验收要求，所有条目均尚未执行，不能当作当前插件通过证据。
 

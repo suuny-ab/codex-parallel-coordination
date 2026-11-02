@@ -173,18 +173,19 @@ from coordination import writer_lock
 from core_runtime import Runtime
 from codex_parallel_coordination.dispatch import StandardDispatch
 from codex_parallel_coordination.worktrees import GitWorktrees
+from codex_parallel_coordination.bridge import ResourceBridge
 mode=sys.argv[2]
 original_create=GitWorktrees.create
-original_register=StandardDispatch._register
+original_register=ResourceBridge.observe_worktree_creation
 original_save=Runtime._save
 original_record=StandardDispatch._record
 def create(self,*args,**kwargs):
     if mode=='tree_before': os._exit(71)
     return original_create(self,*args,**kwargs)
-def register(self,request,resource):
-    if mode=='tree_after' and resource['kind']=='worktree':
+def register(self,*args,**kwargs):
+    if mode=='tree_after':
         with writer_lock(self.runtime.path): os._exit(71)
-    return original_register(self,request,resource)
+    return original_register(self,*args,**kwargs)
 def save(self,state,operation):
     result=original_save(self,state,operation)
     if mode=='native_before' and operation['op']=='launch-callback-intent': os._exit(71)
@@ -194,7 +195,7 @@ def record(self,*args,**kwargs):
     if mode=='driver_gap' and kwargs.get('launch_started'): os._exit(71)
     return result
 GitWorktrees.create=create
-StandardDispatch._register=register
+ResourceBridge.observe_worktree_creation=register
 Runtime._save=save
 StandardDispatch._record=record
 standard_dispatch.main()
@@ -324,14 +325,14 @@ sys.path.insert(0,SCRIPTS)
 import standard_dispatch
 from coordination import writer_lock
 from codex_parallel_coordination.dispatch import StandardDispatch
-original=StandardDispatch._register
-def stuck(self,request,resource):
-    if resource['kind']=='worktree':
-        with writer_lock(self.runtime.path):
-            print(json.dumps(dict(kind='fixture_ready')),flush=True)
-            threading.Event().wait()
-    return original(self,request,resource)
-StandardDispatch._register=stuck
+from codex_parallel_coordination.bridge import ResourceBridge
+original=ResourceBridge.observe_worktree_creation
+def stuck(self,*args,**kwargs):
+    with writer_lock(self.runtime.path):
+        print(json.dumps(dict(kind='fixture_ready')),flush=True)
+        threading.Event().wait()
+    return original(self,*args,**kwargs)
+ResourceBridge.observe_worktree_creation=stuck
 standard_dispatch.main()
 """.replace('SCRIPTS', repr(scripts))
         (bridge/'standard_dispatch.py').write_text(wrapper, encoding='utf-8')

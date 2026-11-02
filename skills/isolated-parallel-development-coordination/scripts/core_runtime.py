@@ -68,7 +68,16 @@ class Runtime:
         from task_state import capture_producer_result
         capture_producer_result(state, operation)
         from stage_feedback import capture
-        if operation['op'] not in ('task-state', 'stage-feedback') or (operation['op'] == 'stage-feedback' and operation['action'] == 'record-installation'):
+        original=state['runtime'].get('operations',{}).get(operation.get('operation_id'),{})
+        key=operation.get('task_id') or original.get('task_id')
+        managed=state['tasks'].get(key,{}).get('resource_contract')=='new-task/1'
+        resource_fact=(operation['op'] in ('resource-flow','agent-permit-result') or managed and operation['op'] in (
+            'create-resource-intent','create-resource-outcome','process-creation-intent','process-creation-outcome',
+            'observe-created-process','register-resource','plan-development-resources') or
+            operation['op'] in ('prepare-native-close','claim-native-close','native-close-unconfirmed','reconcile-close','release-receipt') and
+            original.get('operation')=='close' and original.get('preservation') is None)
+        if not resource_fact and (operation['op'] not in ('task-state','stage-feedback') or
+                operation['op']=='stage-feedback' and operation['action']=='record-installation'):
             capture(state, operation.get('task_ids', [operation['task_id']] if operation.get('task_id') else None))
         validate(state)
         write_atomic(self.path, state)
@@ -256,6 +265,8 @@ class Runtime:
             self._scope(state,task_id)
             task = state['tasks'][task_id]
             require(authorized is True and attempt_id, 'scoped launch authorization required')
+            require(not task.get('cancellation_request') and task['phase'] not in ('completed','cancelled'),
+                    'cancel requested or ended task cannot start execution')
             if task.get('resource_contract')=='new-task/1':
                 from resource_lifecycle import inventory
                 inventory(state,task_id,author=False)
@@ -588,9 +599,9 @@ class Runtime:
         from task_completion import finish
         return finish(self,proof_ref,actor_id)
 
-    def real_use(self,command,actor_id):
+    def real_use(self,command,actor_id,**host_context):
         from real_use_closeout import apply
-        return apply(self,command,actor_id)
+        return apply(self,command,actor_id,**host_context)
 
     def bind_development(self,task_id,spec_ref,actor_id,**options):
         from development_lifecycle import bind
@@ -651,12 +662,19 @@ class Runtime:
         return claim(self,operation_id,actor_id,**options)
 
     def verify_close_confirmation(self,reference):
-        from native_control import verify
+        if load_bound(reference).get('schema')=='resource-close-confirmation/1':
+            from resource_flow import verify_close as verify
+        else:
+            from native_control import verify
         return verify(self,reference)
 
     def register_resource(self,task_id,resource,authority_ref,actor_id):
         from cleanup import register
         return register(self,task_id,resource,authority_ref,actor_id)
+
+    def observe_resource_creation(self,task_id,operation_id,actor_id):
+        from resource_lifecycle import observe_creation
+        return observe_creation(self,task_id,operation_id,actor_id)
 
     def preserve_task(self,task_id,destination,handoff_ref,actor_id,**options):
         from resource_lifecycle import preserve
@@ -670,12 +688,28 @@ class Runtime:
         from cleanup import run
         return run(self,task_id,operation_id,preservation_ref,invoke,actor_id,**options)
 
+    def confirm_cancellation(self,task_id,operation_id,actor_id,**options):
+        from resource_flow import cancel_stopped
+        return cancel_stopped(self,task_id,operation_id,actor_id,**options)
+
+    def close_stopped_pr(self,task_id,operation_id,invoke,actor_id,**options):
+        from resource_flow import close_cancelled_pr
+        return close_cancelled_pr(self,task_id,operation_id,invoke,actor_id,**options)
+
+    def reclaim_resources(self,task_id,operation_id,invoke,actor_id,**options):
+        from resource_flow import reclaim
+        return reclaim(self,task_id,operation_id,invoke,actor_id,**options)
+
     def reconcile_cleanup(self,task_id,resource_id,observation_ref,actor_id):
         from cleanup import reconcile
         return reconcile(self,task_id,resource_id,observation_ref,actor_id)
 
     def verify_cleanup_receipt(self,context,proof):
-        from cleanup import verify
+        value=load_bound(proof) if 'path' in proof and 'sha256' in proof else proof
+        if value.get('flow_contract')=='resource-flow/1':
+            from resource_flow import verify
+        else:
+            from cleanup import verify
         return verify(self,context,proof)
 
     @contextmanager
@@ -687,7 +721,10 @@ class Runtime:
             executor=state['runtime']['executors'][executor_id]
             task=state['tasks'][task_id]
             from cleanup import eligibility
-            eligibility(self,state,task_id,preservation_ref,scope)
+            if preservation_ref is None:
+                from resource_lifecycle import agent_eligibility
+                agent_eligibility(self,state,task_id,scope)
+            else: eligibility(self,state,task_id,preservation_ref,scope)
             require(task['owner_agent_id']==executor_id and executor['generation']==generation,'stale lifecycle target')
             require(executor['lease']=='open','lease needs reconciliation or is already closed')
             ticket=dict(project_id=self.project_id,task_id=task_id,attempt_id=attempt_id,executor_id=executor_id,
@@ -698,6 +735,10 @@ class Runtime:
     def lifecycle(self, operation, executor_id, task_id, attempt_id, generation, adapter, *,
                   preservation_ref=None, admission=None, authorized=False):
         require(operation in ('close','resume') and authorized is True,'explicit lifecycle authorization required')
+        if operation=='close' and preservation_ref is None:
+            from resource_flow import close
+            require(self._load()['tasks'][task_id]['owner_agent_id']==executor_id, 'actual task executor differs')
+            return close(self,task_id,attempt_id,generation,adapter,authorized=authorized)
         # One persisted operation ID prevents uncertain retries after a crash.
         with writer_lock(self.path):
             state=self._load()
@@ -755,6 +796,8 @@ class Runtime:
             closed=operation['operation']=='close' and operation['status']=='closed'
             not_started=operation['operation'] in ('spawn','send') and operation['status'] in ('capacity','unsupported','queued','not_started')
             require(closed or not_started,'unknown/failed/accepted/running is not confirmed resource release')
+            if not_started and operation['operation']=='spawn':
+                require(not operation.get('executor_id') and not operation.get('target_id'), 'actual spawn identity cannot be released as not started')
             if closed:
                 executor=state['runtime']['executors'][operation['executor_id']]
                 require(executor['lease']=='closed' and executor['generation']==operation['generation'],'close receipt is stale after resume')
@@ -794,11 +837,20 @@ class Runtime:
                 artifact(executor['authority'])
                 from cleanup import eligibility
                 from task_completion import completion_flags
-                eligibility(self,state,operation['task_id'],operation['preservation'],operation['proof_scope'],resource_paths=False)
+                if operation['preservation'] is None:
+                    from resource_lifecycle import agent_eligibility
+                    agent_eligibility(self,state,operation['task_id'],operation['proof_scope'])
+                else: eligibility(self,state,operation['task_id'],operation['preservation'],operation['proof_scope'],resource_paths=False)
+                if operation['preservation'] is None:
+                    return dict(completion_flags(state,operation['task_id']),verified=True,guard_contract='agent-release/1',
+                        file_archive_checked=False,no_active_work=True,no_active_descendants=True,no_release_dependencies=True,
+                        exclusive_task_resource=True,cleanup_authorized=operation.get('cleanup_authorized') is True,protected=False)
                 return dict(completion_flags(state,operation['task_id']),verified=True,preservation_valid=True,no_active_work=True,
                     no_active_descendants=True,no_release_dependencies=True,exclusive_task_resource=True,
                     cleanup_authorized=operation.get('cleanup_authorized') is True,protected=False)
             require(value['outcome']=='confirmed_not_started' and operation['status'] in ('capacity','unsupported','queued','not_started'),'not a confirmed unused admission')
+            require(operation['operation']!='spawn' or not operation.get('executor_id') and not operation.get('target_id'),
+                    'actual spawn identity cannot be an unused admission')
             return dict(verified=True,not_started=True)
         except (ValueError,KeyError,TypeError,OSError):return dict(verified=False)
 

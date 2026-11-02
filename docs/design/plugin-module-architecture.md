@@ -1,6 +1,8 @@
 # 插件模块职责与接口设计
 
-STATE-TOOL 实现说明：本 PR 提供职责受限的统一状态、源码绑定、技术交接及独立反馈登记，见[当前接口](../../skills/isolated-parallel-development-coordination/references/task-state.md)。归档移动及资源创建/关闭准入的新设计仍待 ARCHIVE-TOOL、RESOURCE-FLOW；本文其它目标设计不因此成为实现或真实闭环通过结论。
+STATE-TOOL 已提供职责受限的统一状态、源码绑定、技术交接及独立反馈登记，见[当前接口](../../skills/isolated-parallel-development-coordination/references/task-state.md)。
+
+RESOURCE-FLOW 候选提供统一创建、独立作者关闭/许可及取消接续，见[资源入口与当前边界](../resource/resource-flow.md)。文件回收与 ARCHIVE-TOOL 的真实接入及 34 项联测仍待其实际合 main 后完成；契约夹具不代表整体验证通过。
 
 讨论记录：2026-11-02。本文随需求讨论更新，区分已确认事项、当前实现和待定设计。当前运行约束仍见[共同规则](../../skills/isolated-parallel-development-coordination/references/current-rules.md)；本次仅更新设计文档。
 

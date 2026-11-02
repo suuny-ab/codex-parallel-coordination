@@ -68,3 +68,11 @@ python -X utf8 -B tools/run_resource_tests.py --output C:/explicit-evidence/reso
 CORE 默认排除创建临时 Git commit 的五个旧用例；确有临时 Git 授权才加 `--allow-disposable-git`，仅限独占验证根、不 push。包外真实案例缺失明确 skip，不沿用历史数字。RESOURCE 批次有共享测试互斥，忙或 abandoned 不抢占。
 
 进程、orphan worktree、目录/SQLite、native/CI/ref fixture 均按各自测试范围说明，不能冒充真实宿主验收。打包排除运行目录和缓存；来源文件及父目录不能是链接/重解析点。来源与包 hash、测试输出和实际范围绑定后才可交独审，组件测试数不能相加作为组合通过。
+
+## RESOURCE-FLOW 候选
+
+定向入口使用同一 heavy 互斥：`python -X utf8 -B tools/run_preservation_tests.py --output ABSOLUTE_SHORT_OWNED_OUTPUT --batch NAME test_resource_flow.ResourceFlowTests test_resource_flow_capture test_dispatch test_dispatch_timeout test_delivery_continuation`。原任务副本以 `RESOURCE_FLOW_CAPTURE=ABSOLUTE_CASE_JSON` 明确指定，否则该捕获用例 skip。
+
+`tests/capture_resource_flow_case.py --ledger ACTUAL_READONLY_LEDGER --controller ACTUAL_READONLY_RESOURCE_STATE --launch ACTUAL_MANAGED_LAUNCH --process-created ACTUAL_CREATED_RECEIPT --output NEW_OWNED_CAPTURE` 只读取指定原件、核原 Job/PID 并冻结副本，不做 live adoption；副本重放中的集成角色和用户 sideband 明确是夹具。命令、源码与输入指纹保留在测试结果，不能据此宣称正式收件或关闭。
+
+`tools/run_resource_tests.py` 继续重放原冻结 RESOURCE suite；原 provenance 字段保留，RESOURCE-FLOW 仅追加绑定前后源码 hash 的 amendment，runner 核继续关系及实际字节。真实 ARCHIVE 合 main 后仍须联测，不能把归档接点夹具当作 34 项整体通过。入口与场景映射见[资源生命周期](resource/resource-flow.md)。

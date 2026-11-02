@@ -238,10 +238,18 @@ class StandardDispatch:
             require(exists.returncode == 1, 'branch already exists or cannot be verified')
         task = state['tasks'].get(request['task_id'])
         if task:
-            require((previous or reservation) and task['owner_agent_id'] is None and
-                    task['worker_run']['status'] == 'queued' and task['branch'] == request['branch'] and
-                    Path(task['worktree']).resolve() == tree and task['requirements']['scope'] == item['scope'] and
-                    task['requirements']['acceptance'] == item['acceptance'], 'task already owned or differs')
+            if task.get('state_contract'):
+                require(task['owner_agent_id'] is None and task['worker_run']['status']=='queued' and
+                    task['worktree'] in (None,request['worktree']) and task['branch'] in (None,request['branch']) and
+                    task['requirements']['scope']==item['scope'] and task['requirements']['acceptance']==item['acceptance'] and
+                    task['requirements']['user_reference'] in (request['approval'],request['approval']['path']) and
+                    task['state_contract']['spec']==request['requirement']['spec'] and
+                    task['state_contract']['integrator_id']==request['integration_agent'], 'approved STATE task differs')
+            else:
+                require((previous or reservation) and task['owner_agent_id'] is None and
+                        task['worker_run']['status'] == 'queued' and task['branch'] == request['branch'] and
+                        Path(task['worktree']).resolve() == tree and task['requirements']['scope'] == item['scope'] and
+                        task['requirements']['acceptance'] == item['acceptance'], 'task already owned or differs')
             require(not task.get('routing') or task['routing']['requirement_id'] == item['requirement_id'],
                     'task belongs to another requirement')
         require(self.developer.channel == 'native_agent' and self.developer.capabilities()['spawn'] and
@@ -363,6 +371,8 @@ class StandardDispatch:
                     report_path=request['report_path']), self.actor, authority_ref=request['approval'])
             elif not self.runtime._load()['tasks'][task_id].get('routing'):
                 self._route(identity, dict(op='adopt', task_id=task_id))
+            if self.runtime._load()['tasks'][task_id].get('state_contract'):
+                self.bridge.plan_development(task_id,request['worktree'],request['branch'],request['approval'],self.actor)
             if rights:
                 auth = dict(op='instruction', instruction_id=identity + ':rights', source=request['approval'],
                     action='authorize', candidates=[task_id], reason='Explicit approved task-only rights', changes=dict(rights=rights))
@@ -382,25 +392,25 @@ class StandardDispatch:
                                for e in self.git._entries())
                 self._record(identity, worktree_intent=dict(path=request['worktree'], branch=request['branch'], base=base_main))
                 if not reserved:
-                    expected_revision = self.runtime._load()['revision']
                     locks.close()
                     try:
-                        self.git.create(dict(path=request['worktree'], metadata=dict(repository_root=str(self.git.repository))),
-                                        request['branch'], base_main)
+                        created = self.bridge.create_worktree(task_id, identity+':worktree', request['approval'],
+                            self.actor, authorized=True, base=base_main, adapter=self.git)
+                        if created['status'] != 'registered':
+                            self._record(identity, status='worktree_unknown', creation=created)
+                            return self.status(identity)
                     except (subprocess.SubprocessError, OSError) as error:
                         locks.enter_context(writer_lock(self.runtime.directory / 'standard-dispatch-driver'))
                         self._record(identity, status='worktree_unknown', error_type=type(error).__name__)
                         return self.status(identity)
                     locks.enter_context(writer_lock(self.runtime.directory / 'standard-dispatch-driver'))
-                    require(self.runtime._load()['revision'] == expected_revision,
+                    require(self.runtime._load()['revision'] == created['result_revision'],
                             'dispatch state changed during tree creation; observe original tree')
             entries = [e for e in self.git._entries() if Path(e['worktree']).resolve() == Path(request['worktree']).resolve()]
             require(len(entries) == 1 and entries[0].get('branch') == 'refs/heads/' + request['branch'] and
                     entries[0]['HEAD'] == base_main, 'worktree intent needs observation; never blindly recreate')
-            self._register(request, dict(id=task_id + ':worktree', kind='worktree', path=request['worktree']))
-            self.bridge.artifacts.register(dict(resource_id=task_id + ':worktree', project_id=self.runtime.project_id,
-                task_id=task_id, attempt_id=attempt, kind='git_worktree', path=request['worktree'], references=[task_id],
-                protected=False, metadata=dict(repository_root=str(self.git.repository), branch='refs/heads/' + request['branch'])))
+            self.bridge.observe_worktree_creation(task_id,identity+':worktree',request['approval'],self.actor,
+                base=base_main,adapter=self.git)
             message = '\n'.join([f"Task {task_id}: {item['name']}", f"Project: {self.runtime.project_root}",
                 f"Worktree: {request['worktree']}\nBranch: {request['branch']}\nBase main: {base_main}",
                 f"Read spec: {request['requirement']['spec']['path']}", item['scope'],
