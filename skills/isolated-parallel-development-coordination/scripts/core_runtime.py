@@ -159,6 +159,11 @@ class Runtime:
         from task_state import TaskState
         return TaskState(self, actor_id, **host_callbacks)
 
+    def archive_tool(self, actor_id, **host_context):
+        """Explicit archive producer; no merge or cleanup path invokes it automatically."""
+        from archive_tool import ArchiveTool
+        return ArchiveTool(self, actor_id, **host_context)
+
     def routing_status(self):
         """Read current routing evidence and canonical task facts without another queue."""
         from demand_routing import task_version

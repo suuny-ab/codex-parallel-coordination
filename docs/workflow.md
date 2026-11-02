@@ -1,6 +1,6 @@
 # 工作流
 
-STATE-TOOL 的[职责受限状态与反馈入口](../skills/isolated-parallel-development-coordination/references/task-state.md)已提供；RESOURCE-FLOW 候选提供[独立资源入口](resource/resource-flow.md)，文件回收仍待 ARCHIVE-TOOL 实际合 main 后接入；不以流程图或夹具宣称整轮已实现。
+STATE-TOOL 的[职责受限状态与反馈入口](../skills/isolated-parallel-development-coordination/references/task-state.md)已提供；RESOURCE-FLOW 候选提供[独立资源入口](resource/resource-flow.md)，文件回收消费已实际合 main 的 ARCHIVE-TOOL 结果；不以流程图或隔离夹具宣称生产闭环通过。
 
 用户始终留在原主会话。主会话整理业务需求和审批摘要；开发者按需求独立实现；唯一集成者完成技术审核及授权交付。
 
@@ -39,7 +39,7 @@ flowchart TD
 
 ## 代码完成之后
 
-合入 main 并核包含关系后，代码任务才完成。新入口将作者关闭和文件清理分开：关闭核合法结束、停止与真实身份；文件仍按真实归档结果保护。ARCHIVE 接入未完成时保护文件并返回待办；旧 preservation 接口保留原门禁，不批量迁移历史任务。
+合入 main 并核包含关系后，代码任务才完成。新入口将作者关闭和文件清理分开：关闭核合法结束、停止与真实身份；文件仍按真实归档结果保护。ARCHIVE 尚有未完成文件时保护相应目录并返回待办；旧 preservation 接口保留原门禁，不批量迁移历史任务。
 
 回收按资源登记归属和具体授权逐项处理。共享资源、保护项、仍有活动工作或其它使用者的资源保留；关闭失败或结果未知保持待清理和责任者。目录消失、idle、任务 completed 或发送 close 请求都不证明原生关闭、名额或 RAM 已释放。合入完成通知与资源回收通知分别反馈，不把前者写成全部工作结束。
 

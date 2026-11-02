@@ -75,4 +75,4 @@ CORE 默认排除创建临时 Git commit 的五个旧用例；确有临时 Git �
 
 `tests/capture_resource_flow_case.py --ledger ACTUAL_READONLY_LEDGER --controller ACTUAL_READONLY_RESOURCE_STATE --launch ACTUAL_MANAGED_LAUNCH --process-created ACTUAL_CREATED_RECEIPT --output NEW_OWNED_CAPTURE` 只读取指定原件、核原 Job/PID 并冻结副本，不做 live adoption；副本重放中的集成角色和用户 sideband 明确是夹具。命令、源码与输入指纹保留在测试结果，不能据此宣称正式收件或关闭。
 
-`tools/run_resource_tests.py` 继续重放原冻结 RESOURCE suite；原 provenance 字段保留，RESOURCE-FLOW 仅追加绑定前后源码 hash 的 amendment，runner 核继续关系及实际字节。真实 ARCHIVE 合 main 后仍须联测，不能把归档接点夹具当作 34 项整体通过。入口与场景映射见[资源生命周期](resource/resource-flow.md)。
+`tools/run_resource_tests.py` 继续重放原冻结 RESOURCE suite；原 provenance 字段保留，RESOURCE-FLOW 仅追加绑定前后源码 hash 的 amendment，runner 核继续关系及实际字节。已同步实际合 main 的 ARCHIVE 并加入真实移动结果的资源接续联测。34 项场景映射及每次结果保存在作者报告；归档故障、角色及原生宿主夹具不升级为生产闭环通过。入口与场景映射见[资源生命周期](resource/resource-flow.md)。

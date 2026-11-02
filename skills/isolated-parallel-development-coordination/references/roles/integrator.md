@@ -10,7 +10,7 @@
 2. receive/drain 核 task/project/作者/修订、当前报告及最终消息来源/收件者，重复消费仍复核。字段不兼容保留原件并 needs_reconcile，交原作者补契约证据，不改 passed/猜元数据；技术反馈直接原作者同 PR 闭环。真实终态回放与自动投递分开，按实际来源查[观察终态收件](../demand-routing.md#r2真实终态归属与本任务收件)或[CLI 真实任务事实承接](../real-use-closeout.md)。
 3. 跨任务依赖核双方范围、实际证据和目标版本后仅入目标待办；不广播/打断/重排，新增目标或业务选择交主会话。升级用户前核原作者技术排查和替代解释；外部资料协助不冒充业务语义决策。
 
-指定集成者可经[统一状态入口](../task-state.md)登记本任务独审、技术验收及实际合入核对；源码变化交原作者在原 PR 回归。普通 CORE launch 的公开 handoff 接续原身份及 callback 证据，不补造标准派发。RESOURCE-FLOW 的[候选资源入口](../../../../docs/resource/resource-flow.md)将作者关闭、许可和文件回收分开；ARCHIVE 真实接入及整体验证仍待完成。
+指定集成者可经[统一状态入口](../task-state.md)登记本任务独审、技术验收及实际合入核对；源码变化交原作者在原 PR 回归。普通 CORE launch 的公开 handoff 接续原身份及 callback 证据，不补造标准派发。RESOURCE-FLOW 的[候选资源入口](../../../../docs/resource/resource-flow.md)将作者关闭、许可和文件回收分开；文件清理消费已实际合 main 的 ARCHIVE 结果；隔离联测与后续本轮作者真实回收分别计证。
 
 ## 审核与合入
 

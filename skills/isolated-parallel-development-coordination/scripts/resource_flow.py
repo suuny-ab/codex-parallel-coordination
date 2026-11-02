@@ -88,8 +88,29 @@ def close(runtime, task_id, operation_id, generation, adapter, *, authorized=Fal
 
 
 def archive_protection(runtime, state, task_id):
-    """ARCHIVE-TOOL integration is bound to its actual merged contract."""
-    raise ValueError('ARCHIVE-TOOL not yet integrated; use an explicitly declared contract fixture only')
+    """Consume only ARCHIVE's registered minimal fact; never rerun its mover."""
+    from task_state import archive_binding, archive_manifest
+    task=state['tasks'][task_id];manifest=archive_manifest(state,task_id)
+    archive=task.get('archive');policy=state['project'].get('archive_policy')
+    protected=[policy['archive_root']] if policy else []
+    if not archive:
+        items=[manifest['spec'],*(manifest['deliverables'] if task['phase']=='completed' else [])]
+        protected.extend(str(Path(item['path']).parent) for item in items)
+        return dict(verified=True,protected_paths=protected,status='not_registered')
+    operation=state['runtime']['operations'].get(archive['operation_id'],{})
+    producer=task.get('producer_results',{}).get('archive:'+archive['operation_id'],{})
+    plan=operation.get('plan',{})
+    require(operation.get('operation')=='archive' and operation.get('task_id')==task_id and
+        archive.get('schema')=='task-archive/1' and archive.get('project_id')==runtime.project_id and
+        archive.get('task_id')==task_id and archive.get('plan')==plan and
+        producer.get('result')==archive and plan.get('binding')==archive_binding(task) and
+        plan.get('policy')==policy, 'registered ARCHIVE task/source/result binding differs')
+    protected.append(plan['policy']['archive_root'])
+    protected.extend(archive['protected_directories'])
+    if operation['status']!='intent':
+        require(operation.get('result')=={k:v for k,v in archive.items() if k!='plan'},
+                'registered ARCHIVE observation differs')
+    return dict(verified=True,protected_paths=protected,status=archive['status'])
 
 
 def file_eligibility(runtime, state, task_id, resource, scope):

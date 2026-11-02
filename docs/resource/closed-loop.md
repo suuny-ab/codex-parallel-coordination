@@ -1,6 +1,6 @@
 # 新任务资源闭环
 
-RESOURCE-FLOW 候选的独立关闭、取消和逐项回收见[新资源入口](resource-flow.md)；下文 preservation 路径保留原关口，不代表新归档已接入。
+RESOURCE-FLOW 候选的独立关闭、取消和逐项回收见[新资源入口](resource-flow.md)；新入口消费实际合入 ARCHIVE 的已登记结果；下文 preservation 路径保留原关口。
 
 冻结测试结果或基线内的临时指针，须经[受信分类入口](preservation-boundary.md)作为完整捕获包保全；文件内部标签不授予依赖豁免。
 

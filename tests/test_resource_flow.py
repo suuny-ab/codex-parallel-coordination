@@ -28,6 +28,62 @@ class ResourceFlowTests(core_tests.CoreFixture):
                                        self.file('agent-authority.txt'), self.actor)
         return self.runtime._load()
 
+    def actual_archive(self, extras=()):
+        """Actual file mover; task identity/merge/host authority remain fixtures."""
+        from evidence import ref
+        materials=self.root/'materials';materials.mkdir(exist_ok=True)
+        source=materials/'A.md';source.write_text('Final confirmed fixture spec',encoding='utf-8')
+        state=self.runtime._load();task=state['tasks']['A']
+        task['state_contract']=dict(integrator_id=self.actor,spec=ref(source),deliverables=[ref(p) for p in extras])
+        if task['phase']=='completed':
+            merge=task['merge'];merge['main_sha']='c'*40
+            task['source_version']=dict(head_sha=merge['head_sha'],target_sha=merge['target_sha'])
+            merge['observation']=dict(project_id=self.runtime.project_id,task_id='A',source_head=merge['head_sha'],
+                previous_main=merge['target_sha'],main_head=merge['main_sha'],contains_source=True,scope='fixture_only')
+        write_atomic(self.runtime.path,state)
+        tool=self.runtime.archive_tool(self.actor,archive_root=self.root/'archive',spec_root=materials,
+            authorize=lambda *args:True,observe_stop=lambda task:dict(project_id=self.runtime.project_id,task_id='A',
+                owner_agent_id=task['owner_agent_id'],stopped=True,merge_status='not_merged',scope='fixture_only'))
+        return tool,source
+
+    def test_A04_R01_R06_actual_archive_partial_then_resume_same_cleanup_without_report_graph(self):
+        from archive_tool import move_original
+        self.finished();auth=self.file('authority.txt')
+        directory=self.managed/'deliverables';directory.mkdir();extra=directory/'result.bin';extra.write_bytes(b'actual original')
+        unrelated=self.managed/'unrelated';unrelated.write_text('temporary')
+        for key,path,kind in [('deliverables',directory,'environment'),('unrelated',unrelated,'artifact')]:
+            self.runtime.register_resource('A',dict(id=key,kind=kind,path=str(path)),auth,self.actor)
+        tool,source=self.actual_archive([extra])
+        def fail_extra(a,b):
+            if Path(a)==extra:raise PermissionError('explicit archive mover fault')
+            move_original(a,b)
+        with patch('archive_tool.move_original',side_effect=fail_extra):
+            partial=tool.execute('A','archive-A',self.runtime._load()['revision'])
+        self.assertEqual(partial['status'],'partial');self.assertFalse(source.exists());self.assertTrue(extra.exists())
+        host,calls=self.adapter({'close_agent':{'closed':True}})
+        self.runtime.lifecycle('close','worker-A','A','close',1,host,authorized=True)
+        removed=[]
+        def remove(resource):
+            path=Path(resource['path']);path.rmdir() if path.is_dir() else path.unlink();removed.append(resource['id'])
+            return dict(status='cleaned',evidence=self.file(resource['id']+'-removed.txt'))
+        first=self.runtime.reclaim_resources('A','cleanup',remove,self.actor,authorized=True,scope='fixture_only')
+        self.assertEqual(first['status'],'pending_cleanup');self.assertEqual(removed,['unrelated']);self.assertTrue(directory.exists())
+        finished=tool.execute('A','archive-A',self.runtime._load()['revision'])
+        self.assertEqual(finished['status'],'completed');self.assertFalse(extra.exists())
+        with patch('archive_tool.move_original',side_effect=AssertionError('resource must only consume archive fact')):
+            result=self.runtime.reclaim_resources('A','cleanup',remove,self.actor,authorized=True,scope='fixture_only')
+        self.assertEqual(result['status'],'cleanup_completed',result);self.assertEqual(removed,['unrelated','deliverables'])
+        self.assertEqual(len(calls),1);self.assertTrue(Path(finished['files'][1]['current']['path']).exists())
+
+    def test_C01_actual_archive_without_author_or_resources_moves_only_final_spec(self):
+        self.prepare();tool,source=self.actual_archive();self.cancel_decision('A')
+        self.runtime.confirm_cancellation('A','cancel',self.actor,authorized=True,scope='fixture_only')
+        result=tool.execute('A','archive-A',self.runtime._load()['revision'])
+        self.assertEqual(result['status'],'completed');self.assertFalse(source.exists());self.assertEqual(len(result['files']),1)
+        result=self.runtime.reclaim_resources('A','cleanup',lambda _:self.fail('no resource acquired'),self.actor,authorized=True,scope='fixture_only')
+        self.assertEqual(result['status'],'cleanup_completed');task=self.runtime._load()['tasks']['A']
+        self.assertIsNone(task['mr']);self.assertIsNone(task['owner_agent_id'])
+
     def test_R01_archive_failure_does_not_block_independent_close_or_quota_release(self):
         self.finished()
         state = self.runtime._load()
@@ -85,6 +141,11 @@ class ResourceFlowTests(core_tests.CoreFixture):
         self.assertEqual(self.bridge.create_temporary('A','create-db','A:db','database',target,authority,self.actor,
                                                     authorized=True)['status'],'registered')
         self.assertTrue(target.exists())
+        state=self.runtime._load()
+        producer=state['tasks']['A']['producer_results']['resource:create-db']
+        self.assertEqual(producer['ledger_revision'],state['revision'])
+        self.assertTrue(any(e.get('kind')=='resource' and e.get('ledger_revision')==state['revision']
+            for e in state['runtime']['stage_feedback']['events'].values()))
 
     def test_R07_developer_temporary_grant_does_not_grant_cleanup_or_other_tasks(self):
         self.repository()
@@ -101,6 +162,10 @@ class ResourceFlowTests(core_tests.CoreFixture):
         write_atomic(self.runtime.path,state)
         result=self.bridge.create_temporary('A','create-env','A:env','environment',self.managed/'env',authority,'worker-A',authorized=True)
         self.assertEqual(result['status'],'registered')
+        before=self.runtime.path.read_bytes()
+        with patch.object(self.artifacts,'observe',side_effect=AssertionError('unauthorized observation')):
+            with self.assertRaises(ValueError):self.bridge.reconcile_cleanup('A','A:env','worker-A')
+        self.assertEqual(self.runtime.path.read_bytes(),before)
         with self.assertRaises(ValueError):
             self.bridge.create_temporary('A','create-db','A:db','database',self.managed/'db',authority,'worker-A',authorized=True)
         with self.assertRaises(ValueError):
@@ -237,9 +302,10 @@ class ResourceFlowTests(core_tests.CoreFixture):
         self.runtime.close_stopped_pr('A','pr-close',close_pr,self.actor,authorized=True,scope='fixture_only')
         host,calls=self.adapter({'close_agent':{'closed':True}})
         self.bridge.close_developer('A','close',host,authorized=True)
-        before=adapter._git('for-each-ref','--format=%(refname)').stdout
-        with patch('resource_flow.archive_protection',return_value=dict(verified=True,protected_paths=[])):
-            result=self.bridge.reclaim_resources('A','cleanup',self.actor,authorized=True,scope='fixture_only',cleanup_remote_branch=True)
+        archive,source=self.actual_archive()
+        archived=archive.execute('A','archive-A',self.runtime._load()['revision'])
+        self.assertEqual(archived['status'],'completed');self.assertFalse(source.exists())
+        result=self.bridge.reclaim_resources('A','cleanup',self.actor,authorized=True,scope='fixture_only',cleanup_remote_branch=True)
         self.assertEqual(result['status'],'cleanup_completed',result)
         self.assertFalse(tree.exists());self.assertFalse(extra.exists())
         self.assertIsNone(adapter.branch_head('codex/new-task'));self.assertIsNone(adapter.branch_head('codex/new-task',remote=True))

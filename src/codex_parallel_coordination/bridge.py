@@ -374,7 +374,9 @@ class ResourceBridge:
 
     def reconcile_cleanup(self, task_id, resource_id, actor_id):
         """Confirm observed absence after an unknown response; never re-remove."""
-        canonical = self.runtime._load()["runtime"].get("resources",{}).get(resource_id,{})
+        current=self.runtime._load();self.runtime._resource_actor(current,actor_id,task_id);self.runtime._scope(current,task_id)
+        canonical = current["runtime"].get("resources",{}).get(resource_id,{})
+        if canonical.get("task_id") != task_id:raise ValueError("resource belongs to another task")
         if canonical.get("kind") == "process":
             if canonical.get("task_id") != task_id:
                 raise ValueError("process belongs to another task")
