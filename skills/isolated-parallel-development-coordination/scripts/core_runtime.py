@@ -65,8 +65,10 @@ class Runtime:
         state['revision'] += 1
         state['last_reconcile'] = None
         state['history'].append(dict(revision=state['revision'], operation=operation))
+        from task_state import capture_producer_result
+        capture_producer_result(state, operation)
         from stage_feedback import capture
-        if operation['op'] != 'stage-feedback' or operation['action'] == 'record-installation':
+        if operation['op'] not in ('task-state', 'stage-feedback') or (operation['op'] == 'stage-feedback' and operation['action'] == 'record-installation'):
             capture(state, operation.get('task_ids', [operation['task_id']] if operation.get('task_id') else None))
         validate(state)
         write_atomic(self.path, state)
@@ -142,6 +144,11 @@ class Runtime:
             self._save(state, dict(op='routing', event_id=command['event_id'], status=result['status'],
                 task_ids=feedback_tasks(state, command) if result['status'] == 'recorded' else []))
             return result
+
+    def task_state(self, actor_id, **host_callbacks):
+        """Fixed Runtime/profile and actual caller are trusted host sideband."""
+        from task_state import TaskState
+        return TaskState(self, actor_id, **host_callbacks)
 
     def routing_status(self):
         """Read current routing evidence and canonical task facts without another queue."""

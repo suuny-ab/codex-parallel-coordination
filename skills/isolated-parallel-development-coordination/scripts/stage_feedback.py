@@ -12,6 +12,9 @@ def owners(state):
     result = task_receivers(state)
     from real_use_closeout import approval, cli_binding
     for key, task in state['tasks'].items():
+        if task.get('state_contract'):
+            result[key] = task['state_contract']['integrator_id']
+            continue
         binding = task.get('cli_dispatch')
         if not binding:
             continue
@@ -208,6 +211,8 @@ def capture(state, task_ids=None):
         if task_ids is not None and key not in task_ids:
             continue
         task = state['tasks'][key]
+        if task.get('state_contract'):
+            continue  # Producers/events already registered these facts, no report rescan.
         values = facts(state, key)
         data = store(state)
         for event in data['events'].values():
@@ -246,6 +251,10 @@ def pending(state):
     events = []
     for event in data.get('events', {}).values():
         key = event['task_id']
+        if event.get('state_tool'):
+            if event['recipient_id'] == state['coordinator_id'] and event['status'] not in ('displayed','superseded'):
+                events.append(deepcopy(event))
+            continue
         if (event['status'] in ('displayed', 'superseded') or current_owners.get(key) != event['technical_owner'] or
             event['delivery_revision'] != state['tasks'][key]['delivery_revision']):
             continue
@@ -287,6 +296,7 @@ def command(state, value, actor, verify_display=None):
         data['installations'][key] = deepcopy(record)
         return dict(status='recorded', duplicate=duplicate)
     ids = value['notification_ids']
+    require(not any(data['events'].get(i, {}).get('state_tool') for i in ids), 'state-tool feedback uses the bound TaskState entry')
     require(ids and len(ids) == len(set(ids)), 'nonempty unique notification ids required')
     if op == 'confirm-display' and all(data['events'].get(i, {}).get('status') == 'displayed' for i in ids):
         require(actor == state['coordinator_id'] and all(data['events'][i]['display']['proof'] == value['proof'] for i in ids),
