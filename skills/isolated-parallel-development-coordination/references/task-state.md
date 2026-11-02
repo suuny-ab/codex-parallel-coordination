@@ -27,7 +27,7 @@ result = state_tool.record(dict(
 
 | 调用者 | 动作与必要业务字段 |
 | --- | --- |
-| 原主会话 | `register`: spec(path/hash)、scope、acceptance、acceptance_type、integrator_id、rights(bool字典)、user_reference；实际作者/工作树/分支均保持 null，直到生产者取得资源 |
+| 原主会话 | `register`: spec(path/hash)、scope、acceptance、acceptance_type、integrator_id、rights(bool字典)、user_reference、可选 deliverables(默认空的明确文件清单)；实际作者/工作树/分支均保持 null，直到生产者取得资源 |
 | 原主会话 | `authorize`: rights、user_reference；`cancel`: reason、user_reference；`user-acceptance`: version、status(accepted/rejected)、user_reference |
 | 原主会话 | `user-question`: title、prompt、options；只有需用户回复的事项进入原 items 缓冲池 |
 | 原作者 | `progress/problem`: summary；`self-test`: version、status(passed/failed/not_run)、command、evidence；`deliver-pr`: version、pr(provider/id/url)、summary、evidence |
@@ -58,6 +58,6 @@ register/authorize/cancel/user-acceptance 另需可信调用参数 `user_origin=
 
 当前 CORE `_save` 接入已发生的 launch/bind、资源登记/创建/回收对账结果。普通 `Runtime.launch` 的 handoff 同时核原 attempt、许可、路由、实际 callback-result、作者和 generation，明确标识 core_launch 来源；不补造 StandardDispatch 或 observed_dispatch。旧的标准派发、外部观察和报告收件检查继续保留。
 
-新 ARCHIVE-TOOL 原件移动、RESOURCE-FLOW 的集中资源创建及关闭/文件回收准入拆分仍待后续任务。本项没有改变那些实际准入，没有迁移旧任务，不声明34项或真实完整闭环通过。当前自测、指定集成者独审、用户验收、实际合入和关闭分别记结论。
+独立 [ARCHIVE-TOOL 原件移动](archive-tool.md)通过本接口的固定 `_ARCHIVE` 事务接点登记意图、结果和当前文件定位；原件移动不沿旧报告图。RESOURCE-FLOW 的集中资源创建及关闭/文件回收准入拆分仍待后续任务。本项没有改变那些实际准入，没有迁移旧任务，不声明34项或真实完整闭环通过。当前自测、指定集成者独审、用户验收、实际合入和关闭分别记结论。
 
 验证命令见 [STATE runner](../../../tests/run_task_state.py)，覆盖 [11项主责场景](../../../docs/acceptance/tool-workflow-checklist.md)。Windows 使用 Python 3.12+ 的 `-X utf8 -B`，`--temp-root` 选新建、短路径的专属临时目录，`--output` 保存本轮源码绑定及失败/复测。纯 fixture 不证明真实宿主关闭或远端合入。

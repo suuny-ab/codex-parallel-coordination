@@ -9,14 +9,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from coordination import RIGHTS, enqueue, task_base, writer_lock
-from evidence import artifact, callback_result, fingerprint, git, load_bound, require, snapshot
+from evidence import artifact, callback_result, fingerprint, git, io_path, load_bound, require, snapshot
 from stage_feedback import store as feedback_store
 
 VERSIONED = {'self-test', 'deliver-pr', 'review', 'technical-acceptance',
              'user-acceptance', 'source-changed', 'rework', 'merge-verified'}
 COMMITTED = {'deliver-pr', 'review', 'technical-acceptance', 'user-acceptance', 'merge-verified'}
 FIELDS = {
-    'register': {'spec', 'scope', 'acceptance', 'acceptance_type', 'integrator_id', 'rights', 'user_reference'},
+    'register': {'spec', 'scope', 'acceptance', 'acceptance_type', 'integrator_id', 'rights', 'user_reference', 'deliverables'},
     'authorize': {'rights', 'user_reference'}, 'cancel': {'reason', 'user_reference'},
     'progress': {'summary'}, 'problem': {'summary'},
     'self-test': {'status', 'command', 'evidence'}, 'deliver-pr': {'pr', 'summary', 'evidence'},
@@ -190,6 +190,10 @@ class TaskState:
             artifact(evidence)  # Shallow referenced result only; never report graphs.
         if action == 'register':
             artifact(command['spec'])
+            require(isinstance(command.get('deliverables', []), list), 'explicit deliverables list required')
+            for item in command.get('deliverables', []):
+                require(set(item) == {'path', 'sha256'}, 'deliverables are exact file references')
+                artifact(item)
         capture_binding = dict(project_id=self.runtime.project_id, event_id=command['event_id'], fingerprint=digest)
         saved_result = callback_result(self.runtime.directory, capture_binding) if action in ('merge-verified','notification-displayed') else None
         if action == 'merge-verified':
@@ -278,7 +282,8 @@ class TaskState:
                 acceptance_policy_explicit=True, requirements={k: deepcopy(c[k]) for k in ('scope', 'acceptance', 'user_reference', 'acceptance_type')},
                 start_reference=c['user_reference'], report_task_id=key,
                 progress=dict(title=key, business_task_id=key, role='implementation', facts=[], next_step='await actual resource allocation'),
-                state_contract=dict(schema='task-state/1', integrator_id=c['integrator_id'], spec=c['spec']),
+                state_contract=dict(schema='task-state/1', integrator_id=c['integrator_id'], spec=c['spec'],
+                    deliverables=deepcopy(c.get('deliverables', []))),
                 worker_run=dict(status='queued', owner_agent_id=None, expected_delivery_revision=1, mode='implementation'))
             state['tasks'][key] = task
             self._rights(task, c)
@@ -454,8 +459,122 @@ def capture_producer_result(state, operation):
     if name in ('launch-outcome', 'launch-accepted', 'reconcile-launch', 'bind-observed-dispatch', 'bind-executor'):
         record_producer_result(state, _DISPATCH, key, operation.get('attempt_id') or operation.get('operation_id') or name,
             {k: deepcopy(task.get(k)) for k in ('owner_agent_id', 'worktree', 'branch', 'worker_run')})
+    elif name=='task-state' and operation.get('action')=='archive':
+        record_producer_result(state, _ARCHIVE, key, operation['operation_id'], task['archive'])
     elif name in ('create-resource-outcome', 'register-resource', 'resource-cleanup-outcome', 'reconcile-resource-cleanup',
                   'cleanup-round', 'reconcile-cleanup-callback-results', 'aggregate-confirmed-agent-close', 'reconcile-close', 'release-receipt'):
         record_producer_result(state, _RESOURCE, key, operation.get('operation_id') or operation.get('resource_id') or name,
             dict(resources=[deepcopy(r) for r in state['runtime'].get('resources', {}).values() if r['task_id']==key],
                  cleanup=deepcopy(task.get('cleanup'))))
+
+
+def archive_manifest(state, task_id):
+    """Last confirmed exact list from either public task registration path.
+
+    Routing approval was authenticated at intake; reading its recorded facts does
+    not grant filesystem permission. Frozen spec/check references stay historical.
+    """
+    task = state['tasks'][task_id]; contract = task.get('state_contract')
+    identity = task.get('routing', {}).get('requirement_id')
+    record = None
+    if identity:
+        data = state['runtime'].get('intake', {})
+        require(identity in data.get('requirements', {}) and
+            sum(t.get('routing', {}).get('requirement_id')==identity for t in state['tasks'].values())==1,
+            'unique canonical requirement binding required')
+        matches = [i for p in data.get('plans', {}).values() for i in p['items'] if
+                   i['task_id']==task_id and i['requirement_id']==identity]
+        require(matches and data.get('approvals', {}).get(fingerprint(matches[-1]), {}).get('decision')=='approved',
+                'canonical requirement dispatch approval required')
+        record = data['requirements'][identity]
+        require(record.get('start_reference') and task.get('start_reference'), 'canonical approved task start required')
+        spec = record.get('current_spec', record['spec'])
+        require(spec['sha256']==record['spec']['sha256'], 'canonical current spec content identity differs')
+        if contract:
+            require(contract['spec']==spec and contract.get('deliverables', [])==record.get('deliverables', []),
+                    'STATE and canonical confirmed manifests differ')
+    else:
+        require(contract and contract.get('spec'), 'confirmed STATE or canonical routing contract required')
+        spec = contract['spec']
+    return dict(spec=deepcopy(spec), deliverables=deepcopy((contract or record).get('deliverables', [])),
+                requirement_id=identity)
+
+
+def archive_binding(task):
+    """Frozen task facts; moving current file locators must not rewrite reviews."""
+    return {k: deepcopy(task.get(k)) for k in ('owner_agent_id', 'worktree', 'branch',
+        'delivery_revision', 'source_version', 'phase', 'merge', 'cancellation_request', 'cancellation', 'routing')}
+
+
+def record_archive(runtime, capability, actor_id, task_id, operation_id, expected_revision, *, plan=None, result=None):
+    """ARCHIVE's bounded same-ledger transaction. No file/host work under this lock.
+
+    The actual producer supplies an internally verified plan/result. Public JSON
+    events cannot call this seam or supply its in-process capability.
+    """
+    require(capability is _ARCHIVE and bool(plan) != bool(result), 'internal archive capability and one update required')
+    with ExitStack() as transaction:
+        try:
+            transaction.enter_context(writer_lock(io_path(runtime.path)))
+        except ValueError as error:
+            if not str(error).startswith('writer lock exists;'):
+                raise
+            return dict(status='conflict', revision=runtime._load()['revision'], reason='writer_busy')
+        state = runtime._load(); task = state['tasks'][task_id]
+        require(actor_id == receiver(state, task_id) and actor_id != task['owner_agent_id'],
+                'designated independent integrator required for archive')
+        if state['revision'] != expected_revision:
+            return dict(status='conflict', revision=state['revision'])
+        operations = state['runtime']['operations']; old = operations.get(operation_id)
+        if plan is not None:
+            require(plan['project_id'] == runtime.project_id and plan['task_id'] == task_id and
+                plan['operation_id'] == operation_id and plan['binding'] == archive_binding(task), 'archive plan binding differs')
+            policy = state['project'].get('archive_policy')
+            require(policy is None or policy == plan['policy'], 'fixed project archive policy differs')
+            require(not old and not task.get('archive'), 'resume original archive operation; no replacement id')
+            archive_manifest(state, task_id)
+            state['project']['archive_policy'] = deepcopy(plan['policy'])
+            task['spec_location'] = deepcopy(plan['files'][0]['original'])
+            operations[operation_id] = dict(operation='archive', task_id=task_id, operation_id=operation_id,
+                owner=actor_id, plan=deepcopy(plan), status='intent')
+            task['archive'] = dict(schema='task-archive/1', project_id=runtime.project_id, task_id=task_id,
+                operation_id=operation_id, status='intent', plan=deepcopy(plan),
+                protected_directories=sorted({str(Path(f['original']['path']).parent) for f in plan['files']}))
+        else:
+            require(old and old['operation']=='archive' and old['task_id']==task_id and
+                old['plan']['binding'] == archive_binding(task), 'original archive/task binding differs')
+            plan = old['plan']
+            require(result['project_id']==runtime.project_id and result['task_id']==task_id and
+                result['operation_id']==operation_id and len(result['files'])==len(plan['files']) and
+                all(all(row[k]==item[k] for k in ('kind','original','destination'))
+                    for row,item in zip(result['files'],plan['files'])), 'verified archive result identity differs')
+            manifest = archive_manifest(state, task_id)
+            contract = task.get('state_contract')
+            canonical_record = (state['runtime']['intake']['requirements'][manifest['requirement_id']]
+                                if manifest['requirement_id'] else None)
+            for item, row in zip(plan['files'], result['files']):
+                if row['status'] != 'archived':
+                    continue
+                current = manifest['spec'] if item['kind']=='spec' else manifest['deliverables'][item['index']]
+                require(current in (item['original'], item['destination']), 'current confirmed file identity changed')
+                if current != item['destination']:
+                    change = dict(operation_id=operation_id, kind=item['kind'], original=deepcopy(current),
+                                  current=deepcopy(item['destination']), recorded_at=now())
+                    for container in (contract, canonical_record):
+                        if container is None: continue
+                        container.setdefault('location_history', []).append(deepcopy(change))
+                        if item['kind']=='spec':
+                            container['current_spec' if container is canonical_record else 'spec']=deepcopy(item['destination'])
+                        else:
+                            container['deliverables'][item['index']]=deepcopy(item['destination'])
+                    task.setdefault('archive_location_history', []).append(deepcopy(change))
+                if item['kind']=='spec':task['spec_location']=deepcopy(item['destination'])
+            old.update(status=result['status'], result=deepcopy(result))
+            task['archive'] = dict(deepcopy(result), plan=deepcopy(plan))
+        task['last_registered_at'] = now()
+        try:
+            runtime._save(state, dict(op='task-state', action='archive', task_id=task_id, operation_id=operation_id))
+        except OSError as error:
+            return dict(status='registration_pending', reason=str(error), actual_result=deepcopy(result),
+                next_action='observe original archive operation; do not repeat completed moves')
+        return dict(status='recorded', revision=state['revision'])

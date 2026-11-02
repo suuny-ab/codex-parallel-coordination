@@ -37,7 +37,9 @@ def origin(state, reference, user_origin):
 def current_requirement(state, identity):
     record = intake(state)['requirements'][identity]
     discussion = load_bound(record['discussion'])
-    artifact(record['spec'])
+    current = record.get('current_spec', record['spec'])
+    require(current['sha256']==record['spec']['sha256'], 'current spec content identity differs')
+    artifact(current)
     check = load_bound(record['check'])
     require(discussion.get('confirmed') is True and
         check.get('coordinator_id') == state['coordinator_id'] and
@@ -339,6 +341,11 @@ def apply(state, command, actor, user_origin=None):
             all(text(x) for x in command['acceptance']), 'confirmed name, scope and acceptance required')
         record = {k: deepcopy(command[k]) for k in ('name', 'scope', 'acceptance', 'discussion', 'spec', 'check')}
         record['start_reference'] = command.get('start_reference')
+        require(isinstance(command.get('deliverables', []), list), 'explicit deliverables list required')
+        record['deliverables'] = deepcopy(command.get('deliverables', []))
+        for item in record['deliverables']:
+            require(set(item)=={'path','sha256'}, 'deliverables are exact file references')
+            artifact(item)
         previous = data['requirements'].get(identity)
         bound = [t for t in state['tasks'].values() if t.get('routing', {}).get('requirement_id') == identity]
         require(not previous or scope_digest(previous) == scope_digest(record) or
