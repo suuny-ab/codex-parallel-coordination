@@ -120,7 +120,7 @@ agent close 只走 Runtime.lifecycle 单一路径并 mint release_receipt；资�
 
 RESOURCE 文件联接示例：invoke 收到的 resource 已含 CORE 生成的 cleanup_proof（不可变 ref），调用 `artifact_cleanup.cleanup(resource['id'], resource['cleanup_proof'], runtime.verify_cleanup_receipt)`。CORE 的 verifier(context, proof) 只读 canonical cleanup intent、resource/project/task/attempt/path、同一 preservation/main/授权及共享/保护边界，返回与容量释放相同的瞬态 flags；不获取 CORE 写锁、不写账本、不做宿主 I/O，可安全在 RESOURCE 锁内调用。接收者不能自写一个总返回 true 的 echo verifier。process 回调同样保留精确 request_id/nonce 和受管 PID 创建身份，由 RESOURCE 执行物理核验。
 
-部分失败保存 task.cleanup.status=pending_cleanup 和各资源已确认结果，task.phase 仍 completed。重复操作幂等，unknown/intent 不盲重发；reconcile_cleanup 先核实际已清/仍保留证据，再允许新的有限操作继续。原回合结果保留，清理失败不丢任务。后续无需长期保留开发环境：发布用独立冻结提交/制品任务；publication_dependencies 仅指其它活动任务还实际使用这些资源，不能只因“尚待部署”填入。
+部分失败保存 task.cleanup.status=pending_cleanup 和各资源已确认结果，task.phase 仍 completed。重复操作幂等，unknown/intent 不盲重发；reconcile_cleanup 先核实际已清/仍保留证据。原资源经公开入口核实为 retained 后，可用原 operation_id 和 preservation_ref、原授权与 scope 再调用 cleanup_task；当前完成/保全/身份、路径、共享/保护、活动工作和后代门禁仍须全部通过。CORE 在写锁内恢复本资源的执行意图，原失败、回执和 retained 观察保存在该操作的 resumptions 中；释放锁后才调用受信适配器，并拒绝 intent revision 已改变的核验。已清资源不重删，unknown/intent、未核实 retained 和丢失回执不自动重发，RESOURCE 的未知结果仍只观察。原回合证据保留，清理失败不丢任务。后续无需长期保留开发环境：发布用独立冻结提交/制品任务；publication_dependencies 仅指其它活动任务还实际使用这些资源，不能只因“尚待部署”填入。
 
 ## 新任务资源入口
 
